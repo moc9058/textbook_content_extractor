@@ -1,0 +1,28 @@
+[project]
+name = "textbook-content-extractor"
+version = "0.1.0"
+description = "Add your description here"
+requires-python = ">=3.13"
+dependencies = [
+    "paddleocr",
+    # Mac (Apple Silicon / M4) -> CPU wheel from PyPI
+    "paddlepaddle>=3.3.1 ; sys_platform == 'darwin'",
+    # Windows / WSL / Linux (x86_64) -> GPU wheel from Paddle's CUDA index
+    "paddlepaddle-gpu>=3.3.1 ; sys_platform != 'darwin'",
+]
+
+[tool.uv]
+# This project itself is an application, not a distributable package
+package = false
+
+[tool.uv.sources]
+# Use the locally added git submodule for PaddleOCR (editable)
+paddleocr = { path = "external/PaddleOCR", editable = true }
+# GPU builds are served from Paddle's own CUDA index, not PyPI
+paddlepaddle-gpu = { index = "paddle-cu126" }
+
+# CUDA 12.6 build. RTX 3060 (Ampere) + driver 592.27 (CUDA 13.1 capable) supports this.
+[[tool.uv.index]]
+name = "paddle-cu126"
+url = "https://www.paddlepaddle.org.cn/packages/stable/cu126/"
+explicit = true
