@@ -35,7 +35,17 @@ def run(device: str, lang: str = "japan") -> None:
     output_dir.mkdir(parents=True, exist_ok=True)
 
     print(f"[{device}] PP-OCRv6 を初期化中 (lang={lang}) ...")
-    ocr = PaddleOCR(ocr_version="PP-OCRv6", lang=lang, device=device)
+    # スクショなど平らな画像が対象のため、文書の歪み補正・向き補正は無効化する。
+    # （これらは「カメラで撮った湾曲・傾いた紙」向けの機能で、平らな画像では
+    #   レイアウトを歪めて検出漏れ=recall低下を招くため。実測でOFFの方が本文を
+    #   取りこぼさないことを確認済み。）
+    ocr = PaddleOCR(
+        ocr_version="PP-OCRv6",
+        lang=lang,
+        device=device,
+        use_doc_unwarping=False,
+        use_doc_orientation_classify=False,
+    )
 
     for img in images:
         print(f"[{device}] OCR 実行: {img.name}")
