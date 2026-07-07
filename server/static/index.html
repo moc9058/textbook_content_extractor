@@ -1,0 +1,265 @@
+<!doctype html>
+<html lang="ja">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width, initial-scale=1">
+<title>文法OCR → 下書きアップロード</title>
+<style>
+  :root { color-scheme: dark; }
+  * { box-sizing: border-box; }
+  body { margin: 0; background: #111827; color: #f3f4f6; font-family: system-ui, sans-serif; }
+  main { max-width: 880px; margin: 0 auto; padding: 24px 16px 80px; }
+  h1 { font-size: 20px; }
+  h2 { font-size: 16px; margin: 24px 0 8px; }
+  .panel { background: #1f2937; border: 1px solid #374151; border-radius: 12px; padding: 16px; margin-bottom: 16px; }
+  label { font-size: 13px; color: #9ca3af; display: block; margin-bottom: 4px; }
+  select, input[type=text], textarea {
+    width: 100%; background: #111827; color: #f3f4f6; border: 1px solid #4b5563;
+    border-radius: 8px; padding: 8px 10px; font-size: 14px;
+  }
+  textarea { resize: vertical; min-height: 60px; }
+  .row { display: flex; gap: 12px; flex-wrap: wrap; }
+  .row > div { flex: 1; min-width: 140px; }
+  button {
+    background: #4f46e5; color: white; border: none; border-radius: 8px;
+    padding: 9px 16px; font-size: 14px; cursor: pointer;
+  }
+  button:hover { background: #6366f1; }
+  button:disabled { opacity: .5; cursor: not-allowed; }
+  button.danger { background: #7f1d1d; color: #fecaca; }
+  button.ghost { background: transparent; border: 1px solid #4b5563; color: #d1d5db; }
+  .card { border: 1px solid #374151; border-radius: 10px; padding: 12px; margin-bottom: 12px; background: #111827; }
+  .card.excluded { opacity: .45; }
+  .card-head { display: flex; align-items: center; gap: 10px; margin-bottom: 8px; }
+  .example { display: flex; gap: 8px; margin-bottom: 6px; align-items: flex-start; }
+  .example input { flex: 1; }
+  .muted { color: #9ca3af; font-size: 13px; }
+  .status { margin-top: 12px; font-size: 14px; }
+  .status.error { color: #fca5a5; }
+  .status.ok { color: #86efac; }
+  details pre { white-space: pre-wrap; font-size: 12px; color: #9ca3af; max-height: 300px; overflow: auto; }
+  .spinner { display: inline-block; width: 14px; height: 14px; border: 2px solid #6366f1; border-top-color: transparent; border-radius: 50%; animation: spin .8s linear infinite; vertical-align: -2px; margin-right: 6px; }
+  @keyframes spin { to { transform: rotate(360deg); } }
+  .field { margin-bottom: 10px; }
+  a { color: #93c5fd; }
+</style>
+</head>
+<body>
+<main>
+  <h1>文法OCR → 下書きアップロード</h1>
+  <p class="muted" style="margin-top:-4px"><a href="/ocr.html">OCR 出力ビューア（生の検出結果を画像に重ねて確認）→</a></p>
+
+  <div class="panel">
+    <div class="field">
+      <label>ページ画像</label>
+      <input type="file" id="file" accept="image/*">
+    </div>
+    <div class="row">
+      <div>
+        <label>OCR言語</label>
+        <select id="ocrLang">
+          <option value="ch">中国語 (ch)</option>
+          <option value="japan">日本語 (japan)</option>
+        </select>
+      </div>
+      <div>
+        <label>説明言語</label>
+        <select id="descLang">
+          <option value="ja">日本語 (ja)</option>
+          <option value="en">英語 (en)</option>
+          <option value="ko">韓国語 (ko)</option>
+        </select>
+      </div>
+      <div>
+        <label>アップロード先言語</label>
+        <select id="targetLang">
+          <option value="chinese">chinese</option>
+          <option value="japanese">japanese</option>
+          <option value="korean">korean</option>
+        </select>
+      </div>
+    </div>
+    <div style="margin-top:12px">
+      <button id="extractBtn">抽出 (OCR + LLM)</button>
+      <span id="extractStatus" class="status"></span>
+    </div>
+  </div>
+
+  <div id="resultArea" style="display:none">
+    <details class="panel">
+      <summary class="muted">生OCRテキスト</summary>
+      <pre id="ocrText"></pre>
+    </details>
+
+    <h2>候補 <span id="candCount" class="muted"></span></h2>
+    <div id="cards"></div>
+
+    <div class="panel">
+      <button id="uploadBtn">選択した候補を下書きとしてアップロード</button>
+      <button id="downloadBtn" class="ghost">JSONダウンロード</button>
+      <span id="uploadStatus" class="status"></span>
+    </div>
+  </div>
+</main>
+
+<script>
+const $ = (id) => document.getElementById(id);
+let candidates = [];    // { include, statement, level, description, examples: [{sentence, translation}] }
+let sourceImage = "";
+let appConfig = {};
+
+fetch("/api/config").then(r => r.json()).then(c => {
+  appConfig = c;
+  if (c.ocrLang) $("ocrLang").value = c.ocrLang;
+}).catch(() => {});
+
+$("extractBtn").addEventListener("click", async () => {
+  const file = $("file").files[0];
+  const status = $("extractStatus");
+  if (!file) { status.textContent = "画像を選択してください"; status.className = "status error"; return; }
+  $("extractBtn").disabled = true;
+  status.className = "status";
+  status.innerHTML = '<span class="spinner"></span>OCR + LLM 解析中（10〜30秒程度）...';
+  try {
+    const fd = new FormData();
+    fd.append("image", file);
+    fd.append("lang", $("ocrLang").value);
+    fd.append("description_language", $("descLang").value);
+    const resp = await fetch("/api/extract", { method: "POST", body: fd });
+    if (!resp.ok) throw new Error((await resp.json().catch(() => ({}))).detail || `HTTP ${resp.status}`);
+    const data = await resp.json();
+    sourceImage = data.sourceImage;
+    candidates = data.candidates.map(c => ({ include: true, statement: c.statement || "", level: c.level || "", description: c.description || "", examples: (c.examples || []).map(e => ({ sentence: e.sentence || "", translation: e.translation || "" })) }));
+    $("ocrText").textContent = data.ocrText;
+    render();
+    $("resultArea").style.display = "";
+    status.textContent = `${candidates.length}件の候補を抽出しました`;
+    status.className = "status ok";
+  } catch (e) {
+    status.textContent = "失敗: " + e.message;
+    status.className = "status error";
+  } finally {
+    $("extractBtn").disabled = false;
+  }
+});
+
+function render() {
+  const cards = $("cards");
+  cards.innerHTML = "";
+  $("candCount").textContent = `(${candidates.length}件)`;
+  candidates.forEach((c, i) => {
+    const div = document.createElement("div");
+    div.className = "card" + (c.include ? "" : " excluded");
+
+    const head = document.createElement("div");
+    head.className = "card-head";
+    const cb = document.createElement("input");
+    cb.type = "checkbox"; cb.checked = c.include;
+    cb.addEventListener("change", () => { c.include = cb.checked; div.className = "card" + (c.include ? "" : " excluded"); });
+    const stmt = mkInput(c.statement, v => c.statement = v, "文法パターン (statement)");
+    stmt.style.flex = "2";
+    const lvl = mkInput(c.level, v => c.level = v, "レベル");
+    lvl.style.flex = "1";
+    const rm = document.createElement("button");
+    rm.className = "danger"; rm.textContent = "削除";
+    rm.addEventListener("click", () => { candidates.splice(i, 1); render(); });
+    head.append(cb, stmt, lvl, rm);
+    div.append(head);
+
+    const desc = document.createElement("textarea");
+    desc.value = c.description;
+    desc.placeholder = "説明";
+    desc.addEventListener("input", () => c.description = desc.value);
+    div.append(desc);
+
+    const exLabel = document.createElement("p");
+    exLabel.className = "muted"; exLabel.style.margin = "10px 0 6px";
+    exLabel.textContent = "例文";
+    div.append(exLabel);
+
+    c.examples.forEach((ex, j) => {
+      const row = document.createElement("div");
+      row.className = "example";
+      row.append(
+        mkInput(ex.sentence, v => ex.sentence = v, "中国語文"),
+        mkInput(ex.translation, v => ex.translation = v, "訳"),
+      );
+      const del = document.createElement("button");
+      del.className = "ghost"; del.textContent = "×";
+      del.addEventListener("click", () => { c.examples.splice(j, 1); render(); });
+      row.append(del);
+      div.append(row);
+    });
+    const addEx = document.createElement("button");
+    addEx.className = "ghost"; addEx.textContent = "+ 例文追加";
+    addEx.addEventListener("click", () => { c.examples.push({ sentence: "", translation: "" }); render(); });
+    div.append(addEx);
+
+    cards.append(div);
+  });
+}
+
+function mkInput(value, onInput, placeholder) {
+  const el = document.createElement("input");
+  el.type = "text"; el.value = value; el.placeholder = placeholder;
+  el.addEventListener("input", () => onInput(el.value));
+  return el;
+}
+
+function buildDrafts() {
+  const descLang = $("descLang").value;
+  return candidates.filter(c => c.include && c.statement.trim()).map(c => ({
+    statement: c.statement.trim(),
+    descriptions: [{ partOfSpeech: "", text: { [descLang]: c.description.trim() }, pinyins: [] }],
+    examples: c.examples.filter(e => e.sentence.trim()).map(e => ({ sentence: e.sentence.trim(), translation: e.translation.trim() })),
+    ...(c.level.trim() ? { level: c.level.trim() } : {}),
+    sourceImage,
+  }));
+}
+
+// vocab-trainer/docs/draft-json-format.md の "grammar-drafts" 形式で書き出す
+$("downloadBtn").addEventListener("click", () => {
+  const status = $("uploadStatus");
+  const drafts = buildDrafts();
+  if (drafts.length === 0) { status.textContent = "対象の候補がありません"; status.className = "status error"; return; }
+  const payload = { version: 1, kind: "grammar-drafts", language: $("targetLang").value, drafts };
+  const blob = new Blob([JSON.stringify(payload, null, 2)], { type: "application/json" });
+  const a = document.createElement("a");
+  a.href = URL.createObjectURL(blob);
+  const stem = (sourceImage || "drafts").replace(/\.[^.]+$/, "");
+  a.download = `${stem}.grammar-drafts.json`;
+  a.click();
+  URL.revokeObjectURL(a.href);
+  status.textContent = `${drafts.length}件をJSONに書き出しました`;
+  status.className = "status ok";
+});
+
+$("uploadBtn").addEventListener("click", async () => {
+  const status = $("uploadStatus");
+  const language = $("targetLang").value;
+  const drafts = buildDrafts();
+  if (drafts.length === 0) { status.textContent = "アップロード対象がありません"; status.className = "status error"; return; }
+  $("uploadBtn").disabled = true;
+  status.className = "status";
+  status.innerHTML = '<span class="spinner"></span>アップロード中...';
+  try {
+    const resp = await fetch("/api/upload-drafts", {
+      method: "POST",
+      headers: { "Content-Type": "application/json" },
+      body: JSON.stringify({ language, drafts }),
+    });
+    const data = await resp.json().catch(() => ({}));
+    if (!resp.ok) throw new Error(data.detail || data.message || `HTTP ${resp.status}`);
+    const link = appConfig.cloudUiUrl ? ` <a href="${appConfig.cloudUiUrl}" target="_blank">クラウドUIで確認 →</a>` : "";
+    status.innerHTML = `${data.created ?? drafts.length}件を下書きとしてアップロードしました。${link}`;
+    status.className = "status ok";
+  } catch (e) {
+    status.textContent = "失敗: " + e.message;
+    status.className = "status error";
+  } finally {
+    $("uploadBtn").disabled = false;
+  }
+});
+</script>
+</body>
+</html>

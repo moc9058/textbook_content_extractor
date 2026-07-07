@@ -1,11 +1,16 @@
 # textbook-content-extractor
 
-`data/` 内の画像を [PaddleOCR](https://github.com/PaddlePaddle/PaddleOCR) の **PP-OCRv6** モデルで OCR し、認識結果を **JSON** と **可視化画像** として出力するツールです。
+[PaddleOCR](https://github.com/PaddlePaddle/PaddleOCR) の **PP-OCRv6** モデルで教科書ページ画像を OCR するツール群です。2 つの使い方があります。
+
+| モード | 用途 | 実行方法 |
+|---|---|---|
+| **バッチ OCR**（`run_gpu.py` / `run_cpu.py`） | `data/` 内の画像を一括 OCR し、JSON と可視化画像を `output/` に保存 | [使い方（バッチ OCR）](#使い方バッチ-ocr) |
+| **文法下書きツール**（`server/`） | ブラウザで画像をアップロード → OCR → LLM で文法項目に構造化 → vocab-trainer へ「下書き」アップロード | [文法下書きツール（server/）](#文法下書きツールserver) |
 
 - **Windows WSL Ubuntu（NVIDIA GPU）** → GPU 推論
 - **Mac mini M4（Apple Silicon）** → CPU 推論
 
-同じロジック（`ocr_extract.py`）を、環境ごとの実行ファイル（`run_gpu.py` / `run_cpu.py`）から `device` を切り替えて呼び出します。
+バッチ OCR は同じロジック（`ocr_extract.py`）を、環境ごとの実行ファイル（`run_gpu.py` / `run_cpu.py`）から `device` を切り替えて呼び出します。
 
 ---
 
@@ -62,7 +67,7 @@ uv run python -c "import paddle; paddle.utils.run_check()"
 
 ---
 
-## 使い方
+## 使い方（バッチ OCR）
 
 `data/` に OCR したい画像を置いてから、環境に応じて実行します。
 
@@ -106,11 +111,67 @@ uv run python run_cpu.py
 
 ```
 textbook_content_extractor/
-├── data/                 # 入力画像を置く
-├── output/               # 出力（gpu/ , cpu/ に分かれる）
+├── data/                 # 入力画像を置く（バッチOCR用）
+├── output/               # バッチOCRの出力（gpu/ , cpu/ に分かれる）
 ├── external/PaddleOCR/   # PaddleOCR（git submodule）
-├── ocr_extract.py        # 共通処理（画像 → PP-OCRv6 → JSON + 画像）
-├── run_gpu.py            # GPU 版 実行ファイル（WSL Ubuntu）
-├── run_cpu.py            # CPU 版 実行ファイル（Mac mini M4）
+├── ocr_extract.py        # バッチOCR共通処理（画像 → PP-OCRv6 → JSON + 画像）
+├── run_gpu.py            # バッチOCR GPU 版 実行ファイル（WSL Ubuntu）
+├── run_cpu.py            # バッチOCR CPU 版 実行ファイル（Mac mini M4）
+├── server/               # 文法下書きツール（FastAPI + ブラウザUI）
+│   ├── app.py            #   APIサーバー本体（/api/extract, /api/upload-drafts）
+│   ├── ocr.py            #   PP-OCRv6 エンジンのウォームなラッパー
+│   ├── llm.py            #   OCRテキスト → 文法項目候補への構造化（OpenAI）
+│   ├── config.py         #   .env 読み込み
+│   └── static/index.html #   ブラウザUI（ビルド不要の単一ファイル）
+├── .env                  # 秘密情報・接続先設定（git管理外）
+├── .env.example          # .env のテンプレート
 └── pyproject.toml        # 依存定義（プラットフォーム別に paddle を切替）
 ```
+
+---
+
+## 文法下書きツール（server/）
+
+中国語文法本のページ画像を **PP-OCRv6 → LLM構造化 → vocab-trainer へ「下書き」アップロード** まで一気に処理する、ローカル専用の frontend/backend です。中間 JSON ファイルは生成せず、すべてメモリ上で処理します。
+
+### 1. 初回セットアップ
+
+```bash
+cd textbook_content_extractor
+cp .env.example .env   # 下記の変数を設定
+uv sync                # fastapi / uvicorn / openai などが入る
+```
+
+`.env` の設定項目:
+
+| 変数 | 内容 | 例 |
+|---|---|---|
+| `OPENAI_API_KEY` | OpenAI の API キー（vocab-trainer/.env からコピー） | `sk-...` |
+| `OPENAI_MODEL` | 構造化に使うモデル（vocab-trainer の `OPENAI_MODEL_MINI` の値） | `gpt-5.5` |
+| `CLOUD_API_BASE_URL` | 下書きのアップロード先 backend | ローカル: `http://localhost:3000` / 本番: Cloud Run backend の URL |
+| `CLOUD_UI_URL` | アップロード成功後に表示するリンク先 frontend | ローカル: `http://localhost:5173` / 本番: Cloud Run frontend の URL |
+| `OCR_DEVICE` | `gpu`（WSL + NVIDIA）または `cpu`（Mac） | `gpu` |
+| `OCR_LANG` | OCR 言語の既定値（UI 側で毎回切替可） | `ch` |
+
+### 2. サーバー起動
+
+```bash
+uv run uvicorn server.app:app --port 8100
+```
+
+起動時に PP-OCRv6 エンジンをプリウォームするため、初回は数十秒かかります。「プリウォーム完了」が出たら準備完了です。
+
+### 3. ブラウザでの操作
+
+`http://localhost:8100` を開き:
+
+1. **ページ画像をアップロード** — OCR 言語（`ch`=中国語 / `japan`=日本語。日本語で書かれた文法書は `japan` の方が説明文の精度が出る場合あり）、説明言語（`ja`/`en`/`ko`）、アップロード先言語（通常 `chinese`）を選んで「抽出」。OCR + LLM で 10〜30 秒程度。
+2. **候補を確認・編集** — 抽出された文法項目がカードで並ぶ。文法パターン（statement）・レベル・説明・例文をその場で修正でき、チェックを外した候補は送信されない。生の OCR テキストも折りたたみで確認可能。
+3. **「選択した候補を下書きとしてアップロード」** — `CLOUD_API_BASE_URL` の vocab-trainer backend に下書きとして登録される。
+   **「JSONダウンロード」** — 直接アップロードする代わりに、選択した候補を `<画像名>.grammar-drafts.json` としてローカル保存できる。このファイルは vocab-trainer の文法画面の「JSONアップロード」ボタンから読み込むと同じく下書きが一括作成される（形式は vocab-trainer/docs/draft-json-format.md を参照。単語用の `word-drafts` 形式も同ドキュメントで定義済み）。
+
+### 4. 下書きの本登録（vocab-trainer 側）
+
+アップロード後の編集は vocab-trainer の文法画面で行います。「下書き」パネル → **確認** で自動記入済みのフォームが開き、4 言語定義の自動補完・例文の単語 chip・分かち書き変更（例文にスペースを入れて区切る）を使って調整し、保存すると本登録されて下書きは消えます。**破棄** で下書きだけ削除できます。
+
+> ローカルでの動作確認は、vocab-trainer 側を `cd backend && npm run dev`（+ UI を見るなら `cd frontend && npm run dev`）で起動してから行ってください。
