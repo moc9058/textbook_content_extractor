@@ -167,8 +167,9 @@ uv run uvicorn server.app:app --port 8100
 
 1. **ページ画像をアップロード** — OCR 言語（`ch`=中国語 / `japan`=日本語。日本語で書かれた文法書は `japan` の方が説明文の精度が出る場合あり）、説明言語（`ja`/`en`/`ko`）、アップロード先言語（通常 `chinese`）を選んで「抽出」。OCR + LLM で 10〜30 秒程度。
 2. **候補を確認・編集** — 抽出された文法項目がカードで並ぶ。文法パターン（statement）・レベル・説明・例文をその場で修正でき、チェックを外した候補は送信されない。生の OCR テキストも折りたたみで確認可能。
-3. **「選択した候補を下書きとしてアップロード」** — `CLOUD_API_BASE_URL` の vocab-trainer backend に下書きとして登録される。
-   **「JSONダウンロード」** — 直接アップロードする代わりに、選択した候補を `<画像名>.grammar-drafts.json` としてローカル保存できる。このファイルは vocab-trainer の文法画面の「JSONアップロード」ボタンから読み込むと同じく下書きが一括作成される（形式は vocab-trainer/docs/draft-json-format.md を参照。単語用の `word-drafts` 形式も同ドキュメントで定義済み）。
+3. **グループ名（任意）** — カンマ区切りで入力すると、選択中の全候補の下書きに `groups`（グループ**名**の配列）が付く。下書きを vocab-trainer 側で本登録した時点で該当の文法グループに追加され、同名グループが無ければ自動作成される。教科書の課ごとにまとめる用途を想定。
+4. **「選択した候補を下書きとしてアップロード」** — `CLOUD_API_BASE_URL` の vocab-trainer backend に下書きとして登録される。
+   **「JSONダウンロード」** — 直接アップロードする代わりに、選択した候補を `<画像名>.grammar-drafts.json` としてローカル保存できる。このファイルは vocab-trainer の文法画面の「JSONアップロード」ボタンから読み込むと同じく下書きが一括作成される。ファイル形式の仕様は [docs/draft-json-format.md](docs/draft-json-format.md)（正本は vocab-trainer/docs/ 側）を参照。単語用の `word-drafts` 形式も同ドキュメントで定義済み（アップロード先は未実装）。
 
 ### 4. 下書きの本登録（vocab-trainer 側）
 

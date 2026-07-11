@@ -3,263 +3,776 @@
 <head>
 <meta charset="utf-8">
 <meta name="viewport" content="width=device-width, initial-scale=1">
-<title>文法OCR → 下書きアップロード</title>
+<title>教科書OCR → 下書きツール</title>
 <style>
-  :root { color-scheme: dark; }
+  :root {
+    color-scheme: dark;
+    --bg: #0f172a;
+    --panel: #1e293b;
+    --panel-2: #253349;
+    --border: #334155;
+    --text: #e2e8f0;
+    --muted: #94a3b8;
+    --accent: #818cf8;
+    --accent-strong: #6366f1;
+    --danger: #f87171;
+    --ok: #4ade80;
+  }
+  [data-kind="word"] {
+    --accent: #2dd4bf;
+    --accent-strong: #14b8a6;
+  }
   * { box-sizing: border-box; }
-  body { margin: 0; background: #111827; color: #f3f4f6; font-family: system-ui, sans-serif; }
-  main { max-width: 880px; margin: 0 auto; padding: 24px 16px 80px; }
-  h1 { font-size: 20px; }
-  h2 { font-size: 16px; margin: 24px 0 8px; }
-  .panel { background: #1f2937; border: 1px solid #374151; border-radius: 12px; padding: 16px; margin-bottom: 16px; }
-  label { font-size: 13px; color: #9ca3af; display: block; margin-bottom: 4px; }
+  html { scroll-behavior: smooth; }
+  body { margin: 0; background: var(--bg); color: var(--text); font-family: system-ui, -apple-system, "Segoe UI", sans-serif; }
+  main { max-width: 960px; margin: 0 auto; padding: 0 20px 40px; }
+
+  /* ---- header / tabs ---- */
+  header {
+    position: sticky; top: 0; z-index: 20;
+    background: color-mix(in srgb, var(--bg) 88%, transparent);
+    backdrop-filter: blur(8px);
+    border-bottom: 1px solid var(--border);
+    margin-bottom: 20px;
+  }
+  .header-inner { max-width: 960px; margin: 0 auto; padding: 14px 20px; display: flex; align-items: center; gap: 16px; flex-wrap: wrap; }
+  h1 { font-size: 17px; margin: 0; font-weight: 650; letter-spacing: .01em; }
+  .tabs { display: flex; background: var(--panel); border: 1px solid var(--border); border-radius: 10px; padding: 3px; gap: 3px; }
+  .tabs button {
+    background: transparent; border: none; color: var(--muted); font-size: 14px; font-weight: 600;
+    padding: 7px 18px; border-radius: 8px; cursor: pointer; transition: all .15s;
+  }
+  .tabs button:hover { color: var(--text); }
+  .tabs button.active { color: white; }
+  .tabs button.active[data-kind="grammar"] { background: #6366f1; }
+  .tabs button.active[data-kind="word"] { background: #0d9488; }
+  .header-inner a { color: var(--muted); font-size: 13px; margin-left: auto; text-decoration: none; }
+  .header-inner a:hover { color: var(--accent); text-decoration: underline; }
+
+  /* ---- panels / form ---- */
+  .panel { background: var(--panel); border: 1px solid var(--border); border-radius: 14px; padding: 18px; margin-bottom: 16px; }
+  .panel-title { font-size: 13px; font-weight: 650; color: var(--muted); text-transform: uppercase; letter-spacing: .06em; margin: 0 0 12px; }
+  label { font-size: 12px; color: var(--muted); display: block; margin-bottom: 5px; font-weight: 550; }
   select, input[type=text], textarea {
-    width: 100%; background: #111827; color: #f3f4f6; border: 1px solid #4b5563;
-    border-radius: 8px; padding: 8px 10px; font-size: 14px;
+    width: 100%; background: var(--bg); color: var(--text); border: 1px solid var(--border);
+    border-radius: 9px; padding: 8px 11px; font-size: 14px; transition: border-color .15s, box-shadow .15s;
   }
-  textarea { resize: vertical; min-height: 60px; }
-  .row { display: flex; gap: 12px; flex-wrap: wrap; }
-  .row > div { flex: 1; min-width: 140px; }
-  button {
-    background: #4f46e5; color: white; border: none; border-radius: 8px;
-    padding: 9px 16px; font-size: 14px; cursor: pointer;
+  select:focus, input[type=text]:focus, textarea:focus {
+    outline: none; border-color: var(--accent);
+    box-shadow: 0 0 0 3px color-mix(in srgb, var(--accent) 22%, transparent);
   }
-  button:hover { background: #6366f1; }
-  button:disabled { opacity: .5; cursor: not-allowed; }
-  button.danger { background: #7f1d1d; color: #fecaca; }
-  button.ghost { background: transparent; border: 1px solid #4b5563; color: #d1d5db; }
-  .card { border: 1px solid #374151; border-radius: 10px; padding: 12px; margin-bottom: 12px; background: #111827; }
-  .card.excluded { opacity: .45; }
-  .card-head { display: flex; align-items: center; gap: 10px; margin-bottom: 8px; }
-  .example { display: flex; gap: 8px; margin-bottom: 6px; align-items: flex-start; }
-  .example input { flex: 1; }
-  .muted { color: #9ca3af; font-size: 13px; }
-  .status { margin-top: 12px; font-size: 14px; }
-  .status.error { color: #fca5a5; }
-  .status.ok { color: #86efac; }
-  details pre { white-space: pre-wrap; font-size: 12px; color: #9ca3af; max-height: 300px; overflow: auto; }
-  .spinner { display: inline-block; width: 14px; height: 14px; border: 2px solid #6366f1; border-top-color: transparent; border-radius: 50%; animation: spin .8s linear infinite; vertical-align: -2px; margin-right: 6px; }
+  textarea { resize: vertical; min-height: 56px; font-family: inherit; }
+  .config-grid { display: grid; grid-template-columns: 2fr 1fr 1fr 1fr; gap: 12px; }
+  @media (max-width: 720px) { .config-grid { grid-template-columns: 1fr 1fr; } }
+
+  /* ---- buttons ---- */
+  button { font-family: inherit; }
+  .btn {
+    background: var(--accent-strong); color: white; border: none; border-radius: 9px;
+    padding: 10px 18px; font-size: 14px; font-weight: 600; cursor: pointer; transition: filter .15s, opacity .15s;
+  }
+  .btn:hover { filter: brightness(1.12); }
+  .btn:disabled { opacity: .45; cursor: not-allowed; filter: none; }
+  .btn.ghost { background: transparent; border: 1px solid var(--border); color: var(--text); }
+  .btn.ghost:hover { border-color: var(--accent); color: var(--accent); filter: none; }
+  .btn.small { padding: 5px 12px; font-size: 13px; }
+  .icon-btn {
+    background: transparent; border: none; color: var(--muted); cursor: pointer;
+    font-size: 15px; padding: 4px 7px; border-radius: 6px; line-height: 1;
+  }
+  .icon-btn:hover { color: var(--danger); background: color-mix(in srgb, var(--danger) 12%, transparent); }
+
+  /* ---- dropzone ---- */
+  .dropzone {
+    border: 2px dashed var(--border); border-radius: 12px; padding: 28px 16px; text-align: center;
+    cursor: pointer; transition: all .15s; color: var(--muted);
+  }
+  .dropzone:hover, .dropzone.drag {
+    border-color: var(--accent); color: var(--text);
+    background: color-mix(in srgb, var(--accent) 7%, transparent);
+  }
+  .dropzone .dz-icon { font-size: 26px; display: block; margin-bottom: 6px; }
+  .dropzone strong { color: var(--text); }
+  .thumbs { display: flex; flex-wrap: wrap; gap: 10px; margin-top: 14px; }
+  .thumb {
+    position: relative; width: 96px; border: 1px solid var(--border); border-radius: 10px;
+    overflow: hidden; background: var(--bg);
+  }
+  .thumb img { width: 100%; height: 68px; object-fit: cover; display: block; }
+  .thumb .t-name { font-size: 10px; color: var(--muted); padding: 4px 5px; overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
+  .thumb .t-x {
+    position: absolute; top: 3px; right: 3px; width: 20px; height: 20px; border-radius: 50%;
+    background: rgba(0,0,0,.65); color: #fca5a5; border: none; cursor: pointer; font-size: 12px; line-height: 1;
+  }
+  .thumb .t-x:hover { background: rgba(127,29,29,.9); color: white; }
+  .thumb.done::after {
+    content: "✓"; position: absolute; top: 3px; left: 3px; width: 20px; height: 20px; border-radius: 50%;
+    background: color-mix(in srgb, var(--ok) 25%, black); color: var(--ok); font-size: 12px;
+    display: flex; align-items: center; justify-content: center;
+  }
+  .thumb.error::after {
+    content: "!"; position: absolute; top: 3px; left: 3px; width: 20px; height: 20px; border-radius: 50%;
+    background: color-mix(in srgb, var(--danger) 25%, black); color: var(--danger); font-size: 12px; font-weight: 700;
+    display: flex; align-items: center; justify-content: center;
+  }
+  .upload-actions { display: flex; align-items: center; gap: 12px; margin-top: 14px; flex-wrap: wrap; }
+
+  /* ---- progress ---- */
+  .progress { height: 6px; background: var(--bg); border-radius: 3px; overflow: hidden; margin-top: 12px; display: none; }
+  .progress .bar { height: 100%; width: 0%; background: var(--accent); border-radius: 3px; transition: width .3s; }
+  .status { font-size: 13px; color: var(--muted); }
+  .status.error { color: var(--danger); }
+  .status.ok { color: var(--ok); }
+  .page-errors { margin: 10px 0 0; padding: 0; list-style: none; font-size: 13px; color: var(--danger); }
+  .page-errors li { margin-top: 3px; }
+
+  /* ---- results ---- */
+  .results-bar { display: flex; align-items: center; gap: 10px; flex-wrap: wrap; margin: 22px 0 12px; }
+  .results-bar h2 { font-size: 16px; margin: 0; font-weight: 650; }
+  .count-badge {
+    background: color-mix(in srgb, var(--accent) 18%, transparent); color: var(--accent);
+    font-size: 12px; font-weight: 650; padding: 3px 10px; border-radius: 99px;
+  }
+  .results-bar .spacer { flex: 1; }
+  details.rawocr { margin-bottom: 12px; }
+  details.rawocr summary { font-size: 13px; color: var(--muted); cursor: pointer; padding: 4px 0; }
+  details.rawocr pre { white-space: pre-wrap; font-size: 12px; color: var(--muted); max-height: 300px; overflow: auto; background: var(--panel); border: 1px solid var(--border); border-radius: 10px; padding: 12px; }
+
+  /* ---- cards ---- */
+  .card {
+    border: 1px solid var(--border); border-left: 3px solid var(--accent-strong);
+    border-radius: 12px; padding: 14px 16px; margin-bottom: 12px; background: var(--panel);
+    transition: opacity .15s;
+  }
+  .card.excluded { opacity: .4; border-left-color: var(--border); }
+  .card-top { display: flex; align-items: center; gap: 10px; margin-bottom: 10px; }
+  .card-num { font-size: 12px; font-weight: 700; color: var(--accent); min-width: 22px; }
+  .card-src { font-size: 11px; color: var(--muted); margin-left: auto; }
+  .card-grid { display: grid; grid-template-columns: 2fr 1.2fr .8fr; gap: 10px; margin-bottom: 10px; }
+  @media (max-width: 720px) { .card-grid { grid-template-columns: 1fr; } }
+  .subrow { display: flex; gap: 8px; margin-bottom: 8px; align-items: flex-start; }
+  .subrow > input, .subrow > textarea { flex: 1; }
+  .subrow > .pos { flex: 0 0 84px; }
+  .sub-label { font-size: 12px; color: var(--muted); margin: 12px 0 6px; font-weight: 550; }
+  .sub-label:first-child { margin-top: 0; }
+
+  /* ---- カード間の挿入バー ---- */
+  .insert-bar { display: flex; align-items: center; gap: 10px; margin: 0 0 12px; opacity: .3; transition: opacity .15s; }
+  .insert-bar:hover, .insert-bar:focus-within { opacity: 1; }
+  .insert-bar::before, .insert-bar::after { content: ""; flex: 1; height: 1px; background: var(--border); transition: background .15s; }
+  .insert-bar:hover::before, .insert-bar:hover::after,
+  .insert-bar:focus-within::before, .insert-bar:focus-within::after { background: var(--accent); }
+  .insert-bar button {
+    background: transparent; border: 1px dashed var(--border); color: var(--muted);
+    border-radius: 99px; padding: 3px 14px; font-size: 12px; font-weight: 600; cursor: pointer;
+    transition: all .15s; white-space: nowrap;
+  }
+  .insert-bar:hover button, .insert-bar button:focus {
+    border-color: var(--accent); color: var(--accent);
+    background: color-mix(in srgb, var(--accent) 8%, transparent);
+  }
+
+  /* ---- toggle switch ---- */
+  .switch { position: relative; width: 36px; height: 20px; flex-shrink: 0; }
+  .switch input { opacity: 0; width: 0; height: 0; }
+  .switch .track {
+    position: absolute; inset: 0; background: var(--border); border-radius: 99px; cursor: pointer; transition: background .15s;
+  }
+  .switch .track::before {
+    content: ""; position: absolute; width: 14px; height: 14px; border-radius: 50%;
+    background: white; top: 3px; left: 3px; transition: transform .15s;
+  }
+  .switch input:checked + .track { background: var(--accent-strong); }
+  .switch input:checked + .track::before { transform: translateX(16px); }
+
+  /* ---- sticky action bar ---- */
+  .action-bar {
+    position: sticky; bottom: 0; z-index: 10;
+    background: color-mix(in srgb, var(--panel) 92%, transparent);
+    backdrop-filter: blur(8px);
+    border: 1px solid var(--border); border-radius: 14px 14px 0 0; border-bottom: none;
+    padding: 14px 18px; margin-top: 18px;
+    box-shadow: 0 -8px 24px rgba(0,0,0,.35);
+  }
+  .action-bar .row1 { display: flex; gap: 12px; align-items: flex-end; flex-wrap: wrap; }
+  .action-bar .grp { flex: 1; min-width: 220px; }
+  .action-status { margin-top: 8px; font-size: 13px; }
+  .action-status a { color: var(--accent); }
+
+  .spinner {
+    display: inline-block; width: 13px; height: 13px; border: 2px solid var(--accent);
+    border-top-color: transparent; border-radius: 50%; animation: spin .8s linear infinite;
+    vertical-align: -2px; margin-right: 6px;
+  }
   @keyframes spin { to { transform: rotate(360deg); } }
-  .field { margin-bottom: 10px; }
-  a { color: #93c5fd; }
+  .hidden { display: none !important; }
 </style>
 </head>
 <body>
-<main>
-  <h1>文法OCR → 下書きアップロード</h1>
-  <p class="muted" style="margin-top:-4px"><a href="/ocr.html">OCR 出力ビューア（生の検出結果を画像に重ねて確認）→</a></p>
-
-  <div class="panel">
-    <div class="field">
-      <label>ページ画像</label>
-      <input type="file" id="file" accept="image/*">
-    </div>
-    <div class="row">
-      <div>
-        <label>OCR言語</label>
-        <select id="ocrLang">
-          <option value="ch">中国語 (ch)</option>
-          <option value="japan">日本語 (japan)</option>
-        </select>
-      </div>
-      <div>
-        <label>説明言語</label>
-        <select id="descLang">
-          <option value="ja">日本語 (ja)</option>
-          <option value="en">英語 (en)</option>
-          <option value="ko">韓国語 (ko)</option>
-        </select>
-      </div>
-      <div>
-        <label>アップロード先言語</label>
-        <select id="targetLang">
-          <option value="chinese">chinese</option>
-          <option value="japanese">japanese</option>
-          <option value="korean">korean</option>
-        </select>
-      </div>
-    </div>
-    <div style="margin-top:12px">
-      <button id="extractBtn">抽出 (OCR + LLM)</button>
-      <span id="extractStatus" class="status"></span>
-    </div>
+<header>
+  <div class="header-inner">
+    <h1>教科書OCR下書きツール</h1>
+    <nav class="tabs" id="tabs">
+      <button data-kind="grammar" class="active">文法</button>
+      <button data-kind="word">単語</button>
+    </nav>
+    <a href="/ocr.html">OCRビューア →</a>
   </div>
-
-  <div id="resultArea" style="display:none">
-    <details class="panel">
-      <summary class="muted">生OCRテキスト</summary>
-      <pre id="ocrText"></pre>
-    </details>
-
-    <h2>候補 <span id="candCount" class="muted"></span></h2>
-    <div id="cards"></div>
-
-    <div class="panel">
-      <button id="uploadBtn">選択した候補を下書きとしてアップロード</button>
-      <button id="downloadBtn" class="ghost">JSONダウンロード</button>
-      <span id="uploadStatus" class="status"></span>
-    </div>
-  </div>
-</main>
+</header>
+<main id="main"></main>
 
 <script>
-const $ = (id) => document.getElementById(id);
-let candidates = [];    // { include, statement, level, description, examples: [{sentence, translation}] }
-let sourceImage = "";
+"use strict";
+
+// ============================================================
+// 状態: セッション（文法/単語）ごとに独立。タブで切り替えても保持される。
+// ============================================================
+const KIND_META = {
+  grammar: { label: "文法", draftsKind: "grammar-drafts" },
+  word:    { label: "単語", draftsKind: "word-drafts" },
+};
 let appConfig = {};
+let allBooks = [];
+const sessions = {};
+let activeKind = "grammar";
 
-fetch("/api/config").then(r => r.json()).then(c => {
-  appConfig = c;
-  if (c.ocrLang) $("ocrLang").value = c.ocrLang;
-}).catch(() => {});
-
-$("extractBtn").addEventListener("click", async () => {
-  const file = $("file").files[0];
-  const status = $("extractStatus");
-  if (!file) { status.textContent = "画像を選択してください"; status.className = "status error"; return; }
-  $("extractBtn").disabled = true;
-  status.className = "status";
-  status.innerHTML = '<span class="spinner"></span>OCR + LLM 解析中（10〜30秒程度）...';
+// ---------- 起動 ----------
+(async function init() {
   try {
-    const fd = new FormData();
-    fd.append("image", file);
-    fd.append("lang", $("ocrLang").value);
-    fd.append("description_language", $("descLang").value);
-    const resp = await fetch("/api/extract", { method: "POST", body: fd });
-    if (!resp.ok) throw new Error((await resp.json().catch(() => ({}))).detail || `HTTP ${resp.status}`);
-    const data = await resp.json();
-    sourceImage = data.sourceImage;
-    candidates = data.candidates.map(c => ({ include: true, statement: c.statement || "", level: c.level || "", description: c.description || "", examples: (c.examples || []).map(e => ({ sentence: e.sentence || "", translation: e.translation || "" })) }));
-    $("ocrText").textContent = data.ocrText;
-    render();
-    $("resultArea").style.display = "";
-    status.textContent = `${candidates.length}件の候補を抽出しました`;
-    status.className = "status ok";
-  } catch (e) {
-    status.textContent = "失敗: " + e.message;
-    status.className = "status error";
-  } finally {
-    $("extractBtn").disabled = false;
+    const [cfg, bks] = await Promise.all([
+      fetch("/api/config").then(r => r.json()),
+      fetch("/api/books").then(r => r.json()),
+    ]);
+    appConfig = cfg;
+    allBooks = bks.books || [];
+  } catch (e) { /* サーバー未接続でもUIは出す */ }
+  for (const kind of ["grammar", "word"]) {
+    sessions[kind] = createSession(kind);
+    document.getElementById("main").append(sessions[kind].root);
   }
+  switchTab("grammar");
+})();
+
+document.getElementById("tabs").addEventListener("click", (e) => {
+  const btn = e.target.closest("button[data-kind]");
+  if (btn) switchTab(btn.dataset.kind);
 });
 
-function render() {
-  const cards = $("cards");
-  cards.innerHTML = "";
-  $("candCount").textContent = `(${candidates.length}件)`;
-  candidates.forEach((c, i) => {
-    const div = document.createElement("div");
-    div.className = "card" + (c.include ? "" : " excluded");
+function switchTab(kind) {
+  activeKind = kind;
+  document.querySelectorAll("#tabs button").forEach(b => b.classList.toggle("active", b.dataset.kind === kind));
+  for (const k of Object.keys(sessions)) sessions[k].root.classList.toggle("hidden", k !== kind);
+}
 
-    const head = document.createElement("div");
-    head.className = "card-head";
-    const cb = document.createElement("input");
-    cb.type = "checkbox"; cb.checked = c.include;
-    cb.addEventListener("change", () => { c.include = cb.checked; div.className = "card" + (c.include ? "" : " excluded"); });
-    const stmt = mkInput(c.statement, v => c.statement = v, "文法パターン (statement)");
-    stmt.style.flex = "2";
-    const lvl = mkInput(c.level, v => c.level = v, "レベル");
-    lvl.style.flex = "1";
-    const rm = document.createElement("button");
-    rm.className = "danger"; rm.textContent = "削除";
-    rm.addEventListener("click", () => { candidates.splice(i, 1); render(); });
-    head.append(cb, stmt, lvl, rm);
-    div.append(head);
+// ============================================================
+// セッションのUI構築
+// ============================================================
+function createSession(kind) {
+  const s = {
+    kind,
+    files: [],            // { file, url, state: ""|"done"|"error" }
+    candidates: [],
+    processedImages: [],
+    ocrTexts: [],
+    extracting: false,
+  };
 
-    const desc = document.createElement("textarea");
-    desc.value = c.description;
-    desc.placeholder = "説明";
-    desc.addEventListener("input", () => c.description = desc.value);
-    div.append(desc);
+  const root = el("section", { "data-kind": kind, className: kind === activeKind ? "" : "hidden" });
+  s.root = root;
 
-    const exLabel = document.createElement("p");
-    exLabel.className = "muted"; exLabel.style.margin = "10px 0 6px";
-    exLabel.textContent = "例文";
-    div.append(exLabel);
+  // --- 設定パネル ---
+  const cfg = el("div", { className: "panel" });
+  cfg.append(el("p", { className: "panel-title", textContent: `${KIND_META[kind].label}セッション設定` }));
+  const grid = el("div", { className: "config-grid" });
+  s.bookSel = mkSelect(allBooks.filter(b => b.kind === kind).map(b => [b.id, b.title]));
+  s.ocrLangSel = mkSelect([["ch", "中国語 (ch)"], ["japan", "日本語 (japan)"]]);
+  if (appConfig.ocrLang) s.ocrLangSel.value = appConfig.ocrLang;
+  s.descLangSel = mkSelect([["ja", "日本語 (ja)"], ["en", "英語 (en)"], ["ko", "韓国語 (ko)"]]);
+  s.targetLangSel = mkSelect([["chinese", "chinese"], ["japanese", "japanese"], ["korean", "korean"]]);
+  grid.append(
+    field("本", s.bookSel),
+    field("OCR言語", s.ocrLangSel),
+    field("説明言語", s.descLangSel),
+    field("アップロード先言語", s.targetLangSel),
+  );
+  cfg.append(grid);
+  root.append(cfg);
 
-    c.examples.forEach((ex, j) => {
-      const row = document.createElement("div");
-      row.className = "example";
-      row.append(
-        mkInput(ex.sentence, v => ex.sentence = v, "中国語文"),
-        mkInput(ex.translation, v => ex.translation = v, "訳"),
-      );
-      const del = document.createElement("button");
-      del.className = "ghost"; del.textContent = "×";
-      del.addEventListener("click", () => { c.examples.splice(j, 1); render(); });
-      row.append(del);
-      div.append(row);
-    });
-    const addEx = document.createElement("button");
-    addEx.className = "ghost"; addEx.textContent = "+ 例文追加";
-    addEx.addEventListener("click", () => { c.examples.push({ sentence: "", translation: "" }); render(); });
-    div.append(addEx);
+  // --- 画像パネル（ドロップゾーン + サムネイル + 抽出）---
+  const up = el("div", { className: "panel" });
+  up.append(el("p", { className: "panel-title", textContent: "ページ画像" }));
 
-    cards.append(div);
+  s.fileInput = el("input", { type: "file", accept: "image/*", multiple: true });
+  s.fileInput.style.display = "none";
+  s.fileInput.addEventListener("change", () => { addFiles(s, s.fileInput.files); s.fileInput.value = ""; });
+
+  s.dropzone = el("div", { className: "dropzone" });
+  s.dropzone.innerHTML = '<span class="dz-icon">📄</span><strong>クリックして画像を選択</strong>、またはここにドラッグ&ドロップ<br><span style="font-size:12px">複数可 — ファイル名順に処理し、まとめて1つのJSONにできます</span>';
+  s.dropzone.addEventListener("click", () => s.fileInput.click());
+  s.dropzone.addEventListener("dragover", (e) => { e.preventDefault(); s.dropzone.classList.add("drag"); });
+  s.dropzone.addEventListener("dragleave", () => s.dropzone.classList.remove("drag"));
+  s.dropzone.addEventListener("drop", (e) => {
+    e.preventDefault();
+    s.dropzone.classList.remove("drag");
+    addFiles(s, e.dataTransfer.files);
+  });
+
+  s.thumbs = el("div", { className: "thumbs" });
+  s.extractBtn = el("button", { className: "btn", textContent: "抽出 (OCR + LLM)" });
+  s.extractBtn.addEventListener("click", () => extract(s));
+  s.clearBtn = el("button", { className: "btn ghost small", textContent: "画像をクリア" });
+  s.clearBtn.addEventListener("click", () => { s.files.forEach(f => URL.revokeObjectURL(f.url)); s.files = []; renderThumbs(s); });
+  s.extractStatus = el("span", { className: "status" });
+  s.progress = el("div", { className: "progress" });
+  s.progressBar = el("div", { className: "bar" });
+  s.progress.append(s.progressBar);
+  s.pageErrors = el("ul", { className: "page-errors" });
+
+  const actions = el("div", { className: "upload-actions" });
+  actions.append(s.extractBtn, s.clearBtn, s.extractStatus);
+  up.append(s.fileInput, s.dropzone, s.thumbs, actions, s.progress, s.pageErrors);
+  root.append(up);
+
+  // --- 結果 ---
+  s.resultArea = el("div", { className: "hidden" });
+  s.rawOcr = el("details", { className: "rawocr" });
+  s.rawOcrPre = el("pre");
+  s.rawOcr.append(el("summary", { textContent: "生OCRテキストを表示" }), s.rawOcrPre);
+
+  const bar = el("div", { className: "results-bar" });
+  s.candCount = el("span", { className: "count-badge" });
+  s.selAllBtn = el("button", { className: "btn ghost small", textContent: "全選択" });
+  s.selAllBtn.addEventListener("click", () => { s.candidates.forEach(c => c.include = true); renderCards(s); });
+  s.selNoneBtn = el("button", { className: "btn ghost small", textContent: "全解除" });
+  s.selNoneBtn.addEventListener("click", () => { s.candidates.forEach(c => c.include = false); renderCards(s); });
+  bar.append(el("h2", { textContent: "候補" }), s.candCount, el("span", { className: "spacer" }), s.selAllBtn, s.selNoneBtn);
+
+  s.cards = el("div");
+
+  // --- 固定アクションバー ---
+  const ab = el("div", { className: "action-bar" });
+  const row1 = el("div", { className: "row1" });
+  s.groupInput = el("input", { type: "text", placeholder: "例: 第3課, UNIT 2" });
+  const grp = el("div", { className: "grp" });
+  grp.append(el("label", { textContent: "共通グループ名（カンマ区切り・本登録時に自動作成）" }), s.groupInput);
+  s.uploadBtn = el("button", { className: "btn", textContent: "⬆ 下書きをアップロード" });
+  s.uploadBtn.addEventListener("click", () => upload(s));
+  s.downloadBtn = el("button", { className: "btn ghost", textContent: "JSONダウンロード" });
+  s.downloadBtn.addEventListener("click", () => download(s));
+  row1.append(grp, s.uploadBtn, s.downloadBtn);
+  s.actionStatus = el("div", { className: "action-status status" });
+  ab.append(row1, s.actionStatus);
+
+  s.resultArea.append(s.rawOcr, bar, s.cards, ab);
+  root.append(s.resultArea);
+  return s;
+}
+
+// ============================================================
+// 画像の追加・サムネイル
+// ============================================================
+function addFiles(s, fileList) {
+  for (const f of fileList) {
+    if (!f.type.startsWith("image/")) continue;
+    if (s.files.some(x => x.file.name === f.name && x.file.size === f.size)) continue;
+    s.files.push({ file: f, url: URL.createObjectURL(f), state: "" });
+  }
+  // ファイル名の自然順（page_2 < page_10）
+  s.files.sort((a, b) => a.file.name.localeCompare(b.file.name, undefined, { numeric: true, sensitivity: "base" }));
+  renderThumbs(s);
+}
+
+function renderThumbs(s) {
+  s.thumbs.innerHTML = "";
+  s.files.forEach((f, i) => {
+    const t = el("div", { className: "thumb" + (f.state ? " " + f.state : "") });
+    t.title = f.file.name;
+    const img = el("img"); img.src = f.url;
+    const x = el("button", { className: "t-x", textContent: "×", title: "この画像を外す" });
+    x.addEventListener("click", (e) => { e.stopPropagation(); URL.revokeObjectURL(f.url); s.files.splice(i, 1); renderThumbs(s); });
+    t.append(img, x, el("div", { className: "t-name", textContent: f.file.name }));
+    s.thumbs.append(t);
+  });
+  s.extractBtn.disabled = s.files.length === 0 || s.extracting;
+  s.clearBtn.classList.toggle("hidden", s.files.length === 0);
+  if (s.files.length > 0) {
+    s.extractStatus.textContent = `${s.files.length}枚選択中`;
+    s.extractStatus.className = "status";
+  } else if (!s.extracting) {
+    s.extractStatus.textContent = "";
+  }
+}
+
+// ============================================================
+// 抽出
+// ============================================================
+async function extract(s) {
+  if (s.files.length === 0 || s.extracting) return;
+  s.extracting = true;
+  s.extractBtn.disabled = true;
+  s.candidates = [];
+  s.processedImages = [];
+  s.ocrTexts = [];
+  s.pageErrors.innerHTML = "";
+  s.files.forEach(f => f.state = "");
+  renderThumbs(s);
+  s.progress.style.display = "block";
+  s.progressBar.style.width = "0%";
+  const errors = [];
+  try {
+    for (let i = 0; i < s.files.length; i++) {
+      const entry = s.files[i];
+      s.extractStatus.innerHTML = `<span class="spinner"></span>解析中 (${i + 1}/${s.files.length}): ${escapeHtml(entry.file.name)}`;
+      s.extractStatus.className = "status";
+      try {
+        const fd = new FormData();
+        fd.append("image", entry.file);
+        fd.append("lang", s.ocrLangSel.value);
+        fd.append("description_language", s.descLangSel.value);
+        fd.append("kind", s.kind);
+        fd.append("book", s.bookSel.value);
+        const resp = await fetch("/api/extract", { method: "POST", body: fd });
+        if (!resp.ok) throw new Error((await resp.json().catch(() => ({}))).detail || `HTTP ${resp.status}`);
+        const data = await resp.json();
+        // 選択した本と違う本のスクショはこのページごとスキップ（LLM判定）
+        if (data.pageMatchesBook === false) {
+          throw new Error(`選択した本のページではないようです${data.pageNote ? `（${data.pageNote}）` : ""}`);
+        }
+        const src = data.sourceImage || entry.file.name;
+        s.processedImages.push(src);
+        s.ocrTexts.push(`=== ${src} ===\n${data.ocrText}`);
+        s.candidates.push(...data.candidates.map(c => normalizeCandidate(s.kind, c, src)));
+        entry.state = "done";
+      } catch (e) {
+        entry.state = "error";
+        errors.push(`${entry.file.name}: ${e.message}`);
+      }
+      s.progressBar.style.width = `${Math.round(((i + 1) / s.files.length) * 100)}%`;
+      renderThumbs(s);
+      s.rawOcrPre.textContent = s.ocrTexts.join("\n\n");
+      renderCards(s);
+      // 候補0件でも結果エリアは出す（挿入バーから手入力で追加できるように）
+      if (s.candidates.length > 0 || s.processedImages.length > 0) s.resultArea.classList.remove("hidden");
+    }
+    if (errors.length === 0) {
+      s.extractStatus.textContent = `✓ ${s.processedImages.length}ページから${s.candidates.length}件の候補を抽出しました`;
+      s.extractStatus.className = "status ok";
+    } else {
+      s.extractStatus.textContent = `${s.processedImages.length}ページ成功・${errors.length}ページ失敗（${s.candidates.length}件抽出）`;
+      s.extractStatus.className = "status error";
+      errors.forEach(msg => s.pageErrors.append(el("li", { textContent: msg })));
+    }
+  } finally {
+    s.extracting = false;
+    s.extractBtn.disabled = s.files.length === 0;
+    setTimeout(() => { s.progress.style.display = "none"; }, 1200);
+  }
+}
+
+function normalizeCandidate(kind, c, src) {
+  if (kind === "word") {
+    return {
+      include: true,
+      sourceImage: src,
+      term: c.term || "",
+      transliteration: c.transliteration || "",
+      level: c.level || "",
+      definitions: (c.definitions || []).map(d => ({ partOfSpeech: d.partOfSpeech || "", text: d.text || "" })),
+      examples: (c.examples || []).map(e => ({ segmented: (e.segments || []).join(" "), translation: e.translation || "" })),
+    };
+  }
+  return {
+    include: true,
+    sourceImage: src,
+    statement: c.statement || "",
+    group: c.group || "",
+    level: c.level || "",
+    description: c.description || "",
+    examples: (c.examples || []).map(e => ({ sentence: e.sentence || "", translation: e.translation || "" })),
+  };
+}
+
+// ============================================================
+// 候補カード
+// ============================================================
+function renderCards(s) {
+  s.cards.innerHTML = "";
+  const selected = s.candidates.filter(c => c.include).length;
+  s.candCount.textContent = `${selected} / ${s.candidates.length} 件選択中`;
+  // カードの間（先頭・末尾含む）に挿入バーを置き、検出漏れを手入力で追加できるようにする
+  s.candidates.forEach((c, i) => {
+    s.cards.append(insertBar(s, i));
+    s.cards.append(s.kind === "word" ? wordCard(s, c, i) : grammarCard(s, c, i));
+  });
+  s.cards.append(insertBar(s, s.candidates.length));
+}
+
+function insertBar(s, index) {
+  const bar = el("div", { className: "insert-bar" });
+  const btn = el("button", { textContent: "＋ ここに候補を追加", title: "検出されなかった項目をこの位置に手入力で追加" });
+  btn.addEventListener("click", () => insertCandidate(s, index));
+  bar.append(btn);
+  return bar;
+}
+
+function blankCandidate(s, index) {
+  // sourceImage は前後の候補から引き継ぐ（なければ最後に処理した画像）
+  const neighbor = s.candidates[index - 1] || s.candidates[index];
+  const src = (neighbor && neighbor.sourceImage) || s.processedImages[s.processedImages.length - 1] || "";
+  if (s.kind === "word") {
+    return {
+      include: true, sourceImage: src,
+      term: "", transliteration: "", level: "",
+      definitions: [{ partOfSpeech: "", text: "" }],
+      examples: [{ segmented: "", translation: "" }],
+    };
+  }
+  return {
+    include: true, sourceImage: src,
+    statement: "", group: (neighbor && neighbor.group) || "", level: "", description: "",
+    examples: [{ sentence: "", translation: "" }],
+  };
+}
+
+function insertCandidate(s, index) {
+  s.candidates.splice(index, 0, blankCandidate(s, index));
+  renderCards(s);
+  // 挿入したカード（バーとカードが交互に並ぶため 2*index+1 番目）にフォーカス
+  const card = s.cards.children[index * 2 + 1];
+  if (card) {
+    card.scrollIntoView({ behavior: "smooth", block: "center" });
+    const input = card.querySelector("input[type=text]");
+    if (input) input.focus();
+  }
+}
+
+function cardShell(s, c, i) {
+  const div = el("div", { className: "card" + (c.include ? "" : " excluded") });
+  const top = el("div", { className: "card-top" });
+  const sw = mkSwitch(c.include, (v) => { c.include = v; div.className = "card" + (v ? "" : " excluded"); updateCount(s); });
+  top.append(el("span", { className: "card-num", textContent: `#${i + 1}` }), sw);
+  if (s.processedImages.length > 1 && c.sourceImage) {
+    top.append(el("span", { className: "card-src", textContent: c.sourceImage }));
+  }
+  const rm = el("button", { className: "icon-btn", textContent: "🗑", title: "この候補を削除" });
+  rm.style.marginLeft = s.processedImages.length > 1 && c.sourceImage ? "6px" : "auto";
+  rm.addEventListener("click", () => { s.candidates.splice(i, 1); renderCards(s); });
+  top.append(rm);
+  div.append(top);
+  return div;
+}
+
+function updateCount(s) {
+  const selected = s.candidates.filter(c => c.include).length;
+  s.candCount.textContent = `${selected} / ${s.candidates.length} 件選択中`;
+}
+
+function grammarCard(s, c, i) {
+  const div = cardShell(s, c, i);
+  const grid = el("div", { className: "card-grid" });
+  grid.append(
+    field("文法パターン", mkInput(c.statement, v => c.statement = v, "例: 从+場所/時間+V")),
+    field("グループ (Point題名)", mkInput(c.group, v => c.group = v, "")),
+    field("レベル", mkInput(c.level, v => c.level = v, "HSK4")),
+  );
+  div.append(grid);
+
+  const desc = el("textarea", { placeholder: "説明", value: c.description });
+  desc.addEventListener("input", () => c.description = desc.value);
+  div.append(field("説明", desc));
+
+  div.append(el("p", { className: "sub-label", textContent: "例文" }));
+  c.examples.forEach((ex, j) => {
+    const row = el("div", { className: "subrow" });
+    row.append(
+      mkInput(ex.sentence, v => ex.sentence = v, "中国語文"),
+      mkInput(ex.translation, v => ex.translation = v, "訳"),
+      mkDelBtn(() => { c.examples.splice(j, 1); renderCards(s); }),
+    );
+    div.append(row);
+  });
+  div.append(mkAddBtn("+ 例文", () => { c.examples.push({ sentence: "", translation: "" }); renderCards(s); }));
+  return div;
+}
+
+function wordCard(s, c, i) {
+  const div = cardShell(s, c, i);
+  const grid = el("div", { className: "card-grid" });
+  grid.append(
+    field("単語", mkInput(c.term, v => c.term = v, "中国語")),
+    field("ピンイン", mkInput(c.transliteration, v => c.transliteration = v, "pīnyīn")),
+    field("レベル", mkInput(c.level, v => c.level = v, "HSK3")),
+  );
+  div.append(grid);
+
+  div.append(el("p", { className: "sub-label", textContent: "定義（品詞 / 意味）" }));
+  c.definitions.forEach((d, j) => {
+    const row = el("div", { className: "subrow" });
+    const pos = mkInput(d.partOfSpeech, v => d.partOfSpeech = v, "品詞");
+    pos.classList.add("pos"); pos.style.flex = "0 0 84px";
+    const text = el("textarea", { placeholder: "意味（改行可）", value: d.text });
+    text.style.minHeight = "38px";
+    text.addEventListener("input", () => d.text = text.value);
+    row.append(pos, text, mkDelBtn(() => { c.definitions.splice(j, 1); renderCards(s); }));
+    div.append(row);
+  });
+  div.append(mkAddBtn("+ 定義", () => { c.definitions.push({ partOfSpeech: "", text: "" }); renderCards(s); }));
+
+  div.append(el("p", { className: "sub-label", textContent: "例文（中国語はピンインの分かち書きに沿ってスペース区切り）" }));
+  c.examples.forEach((ex, j) => {
+    const row = el("div", { className: "subrow" });
+    row.append(
+      mkInput(ex.segmented, v => ex.segmented = v, "分かち書き: 后悔 也 来不及 了。"),
+      mkInput(ex.translation, v => ex.translation = v, "訳"),
+      mkDelBtn(() => { c.examples.splice(j, 1); renderCards(s); }),
+    );
+    div.append(row);
+  });
+  div.append(mkAddBtn("+ 例文", () => { c.examples.push({ segmented: "", translation: "" }); renderCards(s); }));
+  return div;
+}
+
+// ============================================================
+// draft 構築・アップロード・ダウンロード
+// ============================================================
+function buildDrafts(s) {
+  const descLang = s.descLangSel.value;
+  const sharedGroups = s.groupInput.value.split(/[,、，]/).map(x => x.trim()).filter(Boolean);
+  if (s.kind === "word") {
+    // 分かち書き入力（スペース区切り）→ segments、結合して sentence
+    return s.candidates.filter(c => c.include && c.term.trim()).map(c => ({
+      term: c.term.trim(),
+      ...(c.transliteration.trim() ? { transliteration: c.transliteration.trim() } : {}),
+      definitions: c.definitions.filter(d => d.text.trim()).map(d => ({
+        partOfSpeech: d.partOfSpeech.trim(),
+        text: { [descLang]: d.text.trim() },
+        pinyins: [],
+      })),
+      examples: c.examples.filter(e => e.segmented.trim()).map(e => {
+        const segments = e.segmented.trim().split(/\s+/).filter(Boolean);
+        return { sentence: segments.join(""), segments, translation: e.translation.trim() };
+      }),
+      ...(c.level.trim() ? { level: c.level.trim() } : {}),
+      ...(sharedGroups.length > 0 ? { groups: sharedGroups } : {}),
+      sourceImage: c.sourceImage,
+    }));
+  }
+  return s.candidates.filter(c => c.include && c.statement.trim()).map(c => {
+    const groups = [...new Set([...(c.group.trim() ? [c.group.trim()] : []), ...sharedGroups])];
+    return {
+      statement: c.statement.trim(),
+      descriptions: [{ partOfSpeech: "", text: { [descLang]: c.description.trim() }, pinyins: [] }],
+      examples: c.examples.filter(e => e.sentence.trim()).map(e => ({ sentence: e.sentence.trim(), translation: e.translation.trim() })),
+      ...(c.level.trim() ? { level: c.level.trim() } : {}),
+      ...(groups.length > 0 ? { groups } : {}),
+      sourceImage: c.sourceImage,
+    };
   });
 }
 
-function mkInput(value, onInput, placeholder) {
-  const el = document.createElement("input");
-  el.type = "text"; el.value = value; el.placeholder = placeholder;
-  el.addEventListener("input", () => onInput(el.value));
-  return el;
-}
-
-function buildDrafts() {
-  const descLang = $("descLang").value;
-  return candidates.filter(c => c.include && c.statement.trim()).map(c => ({
-    statement: c.statement.trim(),
-    descriptions: [{ partOfSpeech: "", text: { [descLang]: c.description.trim() }, pinyins: [] }],
-    examples: c.examples.filter(e => e.sentence.trim()).map(e => ({ sentence: e.sentence.trim(), translation: e.translation.trim() })),
-    ...(c.level.trim() ? { level: c.level.trim() } : {}),
-    sourceImage,
-  }));
-}
-
-// vocab-trainer/docs/draft-json-format.md の "grammar-drafts" 形式で書き出す
-$("downloadBtn").addEventListener("click", () => {
-  const status = $("uploadStatus");
-  const drafts = buildDrafts();
-  if (drafts.length === 0) { status.textContent = "対象の候補がありません"; status.className = "status error"; return; }
-  const payload = { version: 1, kind: "grammar-drafts", language: $("targetLang").value, drafts };
+// vocab-trainer/docs/draft-json-format.md の形式で書き出す
+function download(s) {
+  const status = s.actionStatus;
+  const drafts = buildDrafts(s);
+  if (drafts.length === 0) { status.textContent = "対象の候補がありません"; status.className = "action-status status error"; return; }
+  const draftsKind = KIND_META[s.kind].draftsKind;
+  const payload = { version: 1, kind: draftsKind, language: s.targetLangSel.value, drafts };
   const blob = new Blob([JSON.stringify(payload, null, 2)], { type: "application/json" });
   const a = document.createElement("a");
   a.href = URL.createObjectURL(blob);
-  const stem = (sourceImage || "drafts").replace(/\.[^.]+$/, "");
-  a.download = `${stem}.grammar-drafts.json`;
+  // 単一ページ: <画像名>.…json / 複数ページ: <先頭画像名>-<末尾画像名>.…json
+  const stemOf = (name) => (name || "drafts").replace(/\.[^.]+$/, "");
+  const stem = s.processedImages.length > 1
+    ? `${stemOf(s.processedImages[0])}-${stemOf(s.processedImages[s.processedImages.length - 1])}`
+    : stemOf(s.processedImages[0]);
+  a.download = `${stem}.${draftsKind}.json`;
   a.click();
   URL.revokeObjectURL(a.href);
-  status.textContent = `${drafts.length}件をJSONに書き出しました`;
-  status.className = "status ok";
-});
+  status.textContent = `✓ ${drafts.length}件をJSONに書き出しました`;
+  status.className = "action-status status ok";
+}
 
-$("uploadBtn").addEventListener("click", async () => {
-  const status = $("uploadStatus");
-  const language = $("targetLang").value;
-  const drafts = buildDrafts();
-  if (drafts.length === 0) { status.textContent = "アップロード対象がありません"; status.className = "status error"; return; }
-  $("uploadBtn").disabled = true;
-  status.className = "status";
+async function upload(s) {
+  const status = s.actionStatus;
+  const drafts = buildDrafts(s);
+  if (drafts.length === 0) { status.textContent = "アップロード対象がありません"; status.className = "action-status status error"; return; }
+  s.uploadBtn.disabled = true;
+  status.className = "action-status status";
   status.innerHTML = '<span class="spinner"></span>アップロード中...';
   try {
     const resp = await fetch("/api/upload-drafts", {
       method: "POST",
       headers: { "Content-Type": "application/json" },
-      body: JSON.stringify({ language, drafts }),
+      body: JSON.stringify({ language: s.targetLangSel.value, drafts, kind: s.kind }),
     });
     const data = await resp.json().catch(() => ({}));
     if (!resp.ok) throw new Error(data.detail || data.message || `HTTP ${resp.status}`);
     const link = appConfig.cloudUiUrl ? ` <a href="${appConfig.cloudUiUrl}" target="_blank">クラウドUIで確認 →</a>` : "";
-    status.innerHTML = `${data.created ?? drafts.length}件を下書きとしてアップロードしました。${link}`;
-    status.className = "status ok";
+    status.innerHTML = `✓ ${data.created ?? drafts.length}件を下書きとしてアップロードしました。${link}`;
+    status.className = "action-status status ok";
   } catch (e) {
     status.textContent = "失敗: " + e.message;
-    status.className = "status error";
+    status.className = "action-status status error";
   } finally {
-    $("uploadBtn").disabled = false;
+    s.uploadBtn.disabled = false;
   }
-});
+}
+
+// ============================================================
+// 小物
+// ============================================================
+function el(tag, props) {
+  const node = document.createElement(tag);
+  if (props) for (const [k, v] of Object.entries(props)) {
+    if (k === "className") node.className = v;
+    else if (k in node) node[k] = v;
+    else node.setAttribute(k, v);
+  }
+  return node;
+}
+
+function field(labelText, control) {
+  const wrap = el("div");
+  wrap.append(el("label", { textContent: labelText }), control);
+  return wrap;
+}
+
+function mkSelect(options) {
+  const sel = el("select");
+  for (const [value, text] of options) sel.append(el("option", { value, textContent: text }));
+  return sel;
+}
+
+function mkInput(value, onInput, placeholder) {
+  const input = el("input", { type: "text", value, placeholder });
+  input.addEventListener("input", () => onInput(input.value));
+  return input;
+}
+
+function mkSwitch(checked, onChange) {
+  const wrap = el("label", { className: "switch", title: "この候補を含める/外す" });
+  const input = el("input", { type: "checkbox" });
+  input.checked = checked;
+  input.addEventListener("change", () => onChange(input.checked));
+  wrap.append(input, el("span", { className: "track" }));
+  return wrap;
+}
+
+function mkDelBtn(onClick) {
+  const btn = el("button", { className: "icon-btn", textContent: "×", title: "削除" });
+  btn.addEventListener("click", onClick);
+  return btn;
+}
+
+function mkAddBtn(text, onClick) {
+  const btn = el("button", { className: "btn ghost small", textContent: text });
+  btn.addEventListener("click", onClick);
+  return btn;
+}
+
+function escapeHtml(str) {
+  return str.replace(/[&<>"']/g, (ch) => ({ "&": "&amp;", "<": "&lt;", ">": "&gt;", '"': "&quot;", "'": "&#39;" }[ch]));
+}
 </script>
 </body>
 </html>
