@@ -66,11 +66,15 @@ GRAMMAR_CANDIDATES_SCHEMA: dict[str, Any] = {
                 "items": {
                     "type": "object",
                     "additionalProperties": False,
-                    "required": ["statement", "group", "level", "description", "examples"],
+                    "required": ["statement", "transliteration", "group", "level", "description", "examples"],
                     "properties": {
                         "statement": {
                             "type": "string",
                             "description": "The grammar pattern in normalized +/… notation: Chinese function words verbatim (从, 别, 把 …), grammatical roles as LOWERCASE English abbreviations (s, o, v, n, adj, adv …), semantic slots as concise Japanese nouns (人物, 場所, 時間 …). E.g. 别+v+了, 从+場所/時間+v",
+                        },
+                        "transliteration": {
+                            "type": ["string", "null"],
+                            "description": "The pinyin reading of `statement`, romanizing ONLY the Chinese characters (toneless, lowercase, NO tone marks) and leaving EVERYTHING else exactly as in `statement`: English role abbreviations (v, o, s, adj …), Japanese semantic slots (場所, 時間, 人物 …), '+', '/', parentheses and any other punctuation stay byte-for-byte. Examples: statement 能(/可以)+v → neng(/keyi)+v; 从+場所/時間+v → cong+場所/時間+v; 把+o+v → ba+o+v. Return null ONLY when `statement` contains no Chinese characters at all.",
                         },
                         "group": {
                             "type": ["string", "null"],
@@ -123,6 +127,7 @@ Each grammar point appears as a vertical 4-line set; extract one candidate per s
    - Grammatical roles become LOWERCASE abbreviations. Use this fixed mapping, always: {abbreviations}. For roles not in the mapping, coin a short lowercase English abbreviation in the same style. Never output uppercase abbreviations.
    - Semantic slots become concise Japanese nouns (人物, 場所, 時間, 抽象的な目標 …). Verbose printed descriptions must be shortened: 動作を表す述語 → v, 名詞（場所） → 場所.
    So 从＋場所/時間＋動作を表す述語 becomes 从+場所/時間+v. Join elements with half-width "+". Every element must be one of these three kinds — never leave a long descriptive phrase in `statement`. Sometimes the line is annotated with helper notes like （介詞フレーズ） or 結果補語 tying the pattern to the example — these are context, not separate candidates.
+   Also produce `transliteration`: a copy of `statement` where ONLY the Chinese characters are replaced by their toneless lowercase pinyin (no tone marks), and English abbreviations, Japanese slots, "+", "/", parentheses and every other character stay exactly as in `statement`. E.g. 能(/可以)+v → neng(/keyi)+v, 从+場所/時間+v → cong+場所/時間+v. Use null only when the statement has no Chinese characters.
 2. Pinyin line — romanization of line 3 (also fragmented). NEVER include pinyin in any output field; pinyin is regenerated downstream.
 3. Chinese example sentence — may be split (e.g. 后悔 / 也来不及了。); reconstruct the full sentence and fix obvious OCR character errors.
 4. {description_language} translation of line 3.
@@ -349,4 +354,8 @@ def structure_page(
         for cand in result["candidates"]:
             if cand.get("statement"):
                 cand["statement"] = normalize_statement(cand["statement"])
+            # ピンインも statement と同じ正規化（＋→+・小文字化）で構造を揃える
+            cand["transliteration"] = (
+                normalize_statement(cand["transliteration"]) if cand.get("transliteration") else ""
+            )
     return result

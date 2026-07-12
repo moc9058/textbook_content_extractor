@@ -38,6 +38,7 @@ textbook-content-extractor（ローカルOCRツール）のアウトプットと
   "drafts": [
     {
       "statement": "把+O+V",
+      "transliteration": "ba+O+V",
       "descriptions": [
         { "partOfSpeech": "", "text": { "ja": "処置文。対象に処置を加えることを表す。" }, "pinyins": [] }
       ],
@@ -58,6 +59,7 @@ textbook-content-extractor（ローカルOCRツール）のアウトプットと
 | フィールド | 必須 | 型 | 説明 |
 |---|---|---|---|
 | `statement` | 必須 | string | 文法パターン（中国語、`+`/`…` 記法） |
+| `transliteration` | 任意 | string | `statement` のピンイン。**中国語部分だけ**をトーン無し小文字ピンインにし、英語略語・日本語スロット・`+`/`/`・括弧はそのまま（例: `能(/可以)+v`→`neng(/keyi)+v`）。中国語のみ有効 |
 | `descriptions` | 必須 | Meaning[] | 説明。通常は1件・1言語のみ（`text` は ISOコード→説明文 のマップ）。残り言語は本登録時の smart-add が補完する |
 | `examples` | 任意 | {sentence, translation}[] | 例文。ピンイン・分かち書きは本登録時に生成されるため含めない |
 | `level` | 任意 | string | HSK等のレベル表記 |

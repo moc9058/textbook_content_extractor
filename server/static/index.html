@@ -46,7 +46,8 @@
   .tabs button.active { color: white; }
   .tabs button.active[data-kind="grammar"] { background: #6366f1; }
   .tabs button.active[data-kind="word"] { background: #0d9488; }
-  .header-inner a { color: var(--muted); font-size: 13px; margin-left: auto; text-decoration: none; }
+  .header-actions { margin-left: auto; display: flex; align-items: center; gap: 14px; }
+  .header-inner a { color: var(--muted); font-size: 13px; text-decoration: none; }
   .header-inner a:hover { color: var(--accent); text-decoration: underline; }
 
   /* ---- panels / form ---- */
@@ -216,7 +217,10 @@
       <button data-kind="grammar" class="active">文法</button>
       <button data-kind="word">単語</button>
     </nav>
-    <a href="/ocr.html">OCRビューア →</a>
+    <div class="header-actions">
+      <button id="homeBtn" class="btn ghost small" title="このセッションの画像・候補をクリアして最初から">🏠 ホーム</button>
+      <a href="/ocr.html">OCRビューア →</a>
+    </div>
   </div>
 </header>
 <main id="main"></main>
@@ -256,6 +260,12 @@ let activeKind = "grammar";
 document.getElementById("tabs").addEventListener("click", (e) => {
   const btn = e.target.closest("button[data-kind]");
   if (btn) switchTab(btn.dataset.kind);
+});
+
+// ホーム: 表示中セッションを初期状態（画像・候補・結果なし）に戻す
+document.getElementById("homeBtn").addEventListener("click", () => {
+  const s = sessions[activeKind];
+  if (s) resetSession(s);
 });
 
 function switchTab(kind) {
@@ -359,7 +369,9 @@ function createSession(kind) {
   s.uploadBtn.addEventListener("click", () => upload(s));
   s.downloadBtn = el("button", { className: "btn ghost", textContent: "JSONダウンロード" });
   s.downloadBtn.addEventListener("click", () => download(s));
-  row1.append(grp, s.uploadBtn, s.downloadBtn);
+  s.newGroupBtn = el("button", { className: "btn ghost", textContent: "🆕 新しい画像グループ", title: "画像・候補をクリアして次のグループを開始" });
+  s.newGroupBtn.addEventListener("click", () => resetSession(s));
+  row1.append(grp, s.uploadBtn, s.downloadBtn, s.newGroupBtn);
   s.actionStatus = el("div", { className: "action-status status" });
   ab.append(row1, s.actionStatus);
 
@@ -401,6 +413,32 @@ function renderThumbs(s) {
   } else if (!s.extracting) {
     s.extractStatus.textContent = "";
   }
+}
+
+// セッションを初期状態に戻す（新しい画像グループを始めやすくする）。
+// 候補が残っている場合のみ確認する。
+function resetSession(s, opts) {
+  const confirmIfWork = !opts || opts.confirmIfWork !== false;
+  if (confirmIfWork && s.candidates.length > 0 &&
+      !confirm("現在の画像・候補をクリアして、新しい画像グループを始めますか？")) return;
+  s.files.forEach(f => URL.revokeObjectURL(f.url));
+  s.files = [];
+  s.candidates = [];
+  s.processedImages = [];
+  s.ocrTexts = [];
+  s.extracting = false;
+  s.resultArea.classList.add("hidden");
+  s.pageErrors.innerHTML = "";
+  s.rawOcrPre.textContent = "";
+  s.groupInput.value = "";
+  s.actionStatus.textContent = "";
+  s.actionStatus.className = "action-status status";
+  s.progress.style.display = "none";
+  s.progressBar.style.width = "0%";
+  if (s.newGroupBtn) s.newGroupBtn.className = "btn ghost";
+  renderThumbs(s);
+  renderCards(s);
+  window.scrollTo({ top: 0, behavior: "smooth" });
 }
 
 // ============================================================
@@ -454,11 +492,24 @@ async function extract(s) {
       // 候補0件でも結果エリアは出す（挿入バーから手入力で追加できるように）
       if (s.candidates.length > 0 || s.processedImages.length > 0) s.resultArea.classList.remove("hidden");
     }
+    // 全ページ抽出後に、同じ文法パターンの重複を①②…でまとめる（文法のみ・LLMなし）
+    const rawCount = s.candidates.length;
+    let mergedCount = 0;
+    if (s.kind === "grammar") {
+      const merged = mergeDuplicateGrammar(s.candidates);
+      s.candidates = merged.candidates;
+      mergedCount = merged.mergedCount;
+      renderCards(s);
+    }
     if (errors.length === 0) {
-      s.extractStatus.textContent = `✓ ${s.processedImages.length}ページから${s.candidates.length}件の候補を抽出しました`;
+      s.extractStatus.textContent = mergedCount > 0
+        ? `✓ ${s.processedImages.length}ページから${rawCount}件を抽出し、重複文法を統合して${s.candidates.length}件にしました`
+        : `✓ ${s.processedImages.length}ページから${s.candidates.length}件の候補を抽出しました`;
       s.extractStatus.className = "status ok";
     } else {
-      s.extractStatus.textContent = `${s.processedImages.length}ページ成功・${errors.length}ページ失敗（${s.candidates.length}件抽出）`;
+      s.extractStatus.textContent = mergedCount > 0
+        ? `${s.processedImages.length}ページ成功・${errors.length}ページ失敗（${rawCount}件抽出→重複統合で${s.candidates.length}件）`
+        : `${s.processedImages.length}ページ成功・${errors.length}ページ失敗（${s.candidates.length}件抽出）`;
       s.extractStatus.className = "status error";
       errors.forEach(msg => s.pageErrors.append(el("li", { textContent: msg })));
     }
@@ -485,11 +536,73 @@ function normalizeCandidate(kind, c, src) {
     include: true,
     sourceImage: src,
     statement: c.statement || "",
+    transliteration: c.transliteration || "",
     group: c.group || "",
     level: c.level || "",
     description: c.description || "",
     examples: (c.examples || []).map(e => ({ sentence: e.sentence || "", translation: e.translation || "" })),
   };
+}
+
+// ============================================================
+// 重複文法の統合（LLMなし・生成済みの候補をまとめるだけ）
+// 同じ文法パターン（分かち書き・大文字小文字・＋/+ を標準化して比較）が複数回
+// 出てきた場合、各説明を ①②… で番号付けして1つの候補にまとめる。
+// ============================================================
+const CIRCLED = "①②③④⑤⑥⑦⑧⑨⑩⑪⑫⑬⑭⑮⑯⑰⑱⑲⑳".split("");
+function circledNum(i) { return CIRCLED[i] || `(${i + 1})`; }
+
+// 比較用の正規化キー: ＋→+、+区切りで各要素の空白除去＋小文字化。
+function grammarKey(statement) {
+  return (statement || "")
+    .replace(/＋/g, "+")
+    .split("+")
+    .map(p => p.replace(/\s+/g, "").toLowerCase())
+    .filter(Boolean)
+    .join("+");
+}
+
+// 同じキーの候補を1つにまとめる。順序（初出順）は保持。
+// 返り値: { candidates, mergedCount }（mergedCount = 統合により消えた重複数）
+function mergeDuplicateGrammar(candidates) {
+  const byKey = new Map(); // key -> result 内の index
+  const result = [];
+  let mergedCount = 0;
+  for (const c of candidates) {
+    const key = grammarKey(c.statement);
+    const idx = key ? byKey.get(key) : undefined;
+    if (idx === undefined) {
+      if (key) byKey.set(key, result.length);
+      result.push({ ...c, examples: c.examples.map(e => ({ ...e })), _descs: [c.description], _sources: [c.sourceImage] });
+    } else {
+      const t = result[idx];
+      t._descs.push(c.description);
+      c.examples.forEach(e => t.examples.push({ ...e }));
+      t._sources.push(c.sourceImage);
+      if (!t.transliteration && c.transliteration) t.transliteration = c.transliteration;
+      if (!t.group && c.group) t.group = c.group;
+      if (!t.level && c.level) t.level = c.level;
+      if (c.include) t.include = true;
+      mergedCount++;
+    }
+  }
+  for (const t of result) {
+    const descs = t._descs.map(d => (d || "").trim()).filter(Boolean);
+    // 意味が2つ以上ある時だけ番号付け。1つ（＝重複なし）はそのまま。
+    t.description = descs.length > 1 ? descs.map((d, i) => `${circledNum(i)} ${d}`).join("\n\n") : (descs[0] || "");
+    // 同一文（sentence）の例文は重複除去して連結
+    const seen = new Set();
+    t.examples = t.examples.filter(e => {
+      const k = (e.sentence || "").trim();
+      if (k && seen.has(k)) return false;
+      if (k) seen.add(k);
+      return true;
+    });
+    t.sourceImage = [...new Set(t._sources.filter(Boolean))].join(", ");
+    delete t._descs;
+    delete t._sources;
+  }
+  return { candidates: result, mergedCount };
 }
 
 // ============================================================
@@ -529,7 +642,7 @@ function blankCandidate(s, index) {
   }
   return {
     include: true, sourceImage: src,
-    statement: "", group: (neighbor && neighbor.group) || "", level: "", description: "",
+    statement: "", transliteration: "", group: (neighbor && neighbor.group) || "", level: "", description: "",
     examples: [{ sentence: "", translation: "" }],
   };
 }
@@ -572,6 +685,7 @@ function grammarCard(s, c, i) {
   const grid = el("div", { className: "card-grid" });
   grid.append(
     field("文法パターン", mkInput(c.statement, v => c.statement = v, "例: 从+場所/時間+V")),
+    field("ピンイン (中国語部分のみ)", mkInput(c.transliteration, v => c.transliteration = v, "例: cong+場所/時間+v")),
     field("グループ (Point題名)", mkInput(c.group, v => c.group = v, "")),
     field("レベル", mkInput(c.level, v => c.level = v, "HSK4")),
   );
@@ -661,6 +775,7 @@ function buildDrafts(s) {
     const groups = [...new Set([...(c.group.trim() ? [c.group.trim()] : []), ...sharedGroups])];
     return {
       statement: c.statement.trim(),
+      ...(c.transliteration.trim() ? { transliteration: c.transliteration.trim() } : {}),
       descriptions: [{ partOfSpeech: "", text: { [descLang]: c.description.trim() }, pinyins: [] }],
       examples: c.examples.filter(e => e.sentence.trim()).map(e => ({ sentence: e.sentence.trim(), translation: e.translation.trim() })),
       ...(c.level.trim() ? { level: c.level.trim() } : {}),
@@ -708,8 +823,10 @@ async function upload(s) {
     const data = await resp.json().catch(() => ({}));
     if (!resp.ok) throw new Error(data.detail || data.message || `HTTP ${resp.status}`);
     const link = appConfig.cloudUiUrl ? ` <a href="${appConfig.cloudUiUrl}" target="_blank">クラウドUIで確認 →</a>` : "";
-    status.innerHTML = `✓ ${data.created ?? drafts.length}件を下書きとしてアップロードしました。${link}`;
+    status.innerHTML = `✓ ${data.created ?? drafts.length}件を下書きとしてアップロードしました。${link}<br>続けて別のページを処理するには「🆕 新しい画像グループ」を押してください。`;
     status.className = "action-status status ok";
+    // 次のグループへ進みやすいよう、リセットボタンを強調
+    if (s.newGroupBtn) s.newGroupBtn.className = "btn";
   } catch (e) {
     status.textContent = "失敗: " + e.message;
     status.className = "action-status status error";
