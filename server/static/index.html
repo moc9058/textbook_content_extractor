@@ -390,10 +390,15 @@ function createSession(kind) {
 // ============================================================
 // 画像の追加・サムネイル
 // ============================================================
+const IMAGE_EXT_RE = /\.(png|jpe?g|webp|bmp|gif|tiff?)$/i;
+
 function addFiles(s, fileList) {
   for (const f of fileList) {
-    if (!f.type.startsWith("image/")) continue;
-    if (s.files.some(x => x.file.name === f.name && x.file.size === f.size)) continue;
+    // フォルダ選択時、OSによってはサブフォルダ内ファイルのMIMEタイプが空になることがあるため拡張子でも判定する
+    const isImage = f.type.startsWith("image/") || IMAGE_EXT_RE.test(f.name);
+    if (!isImage) continue;
+    const key = f.webkitRelativePath || f.name;
+    if (s.files.some(x => (x.file.webkitRelativePath || x.file.name) === key && x.file.size === f.size)) continue;
     s.files.push({ file: f, url: URL.createObjectURL(f), state: "" });
   }
   // ファイル名（フォルダ選択時は相対パス）の自然順（page_2 < page_10）
