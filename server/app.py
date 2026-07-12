@@ -94,13 +94,16 @@ async def extract(
         shutil.copyfileobj(image.file, tmp)
         tmp_path = Path(tmp.name)
     try:
+        started_at = time.perf_counter()
         items = engine.extract_detail(tmp_path, settings.ocr_device, ocr_lang)
         if not items:
             raise HTTPException(status_code=422, detail="OCRでテキストを検出できませんでした")
+        ocr_elapsed = time.perf_counter() - started_at
         ocr_text = "\n".join(it["text"] for it in items)
         result = structure_page(
             openai_client, settings.openai_model, book_id, items, description_language
         )
+        total_elapsed = time.perf_counter() - started_at
         return {
             "sourceImage": image.filename or "upload",
             "book": book_id,
@@ -110,6 +113,8 @@ async def extract(
             "pageMatchesBook": result["page_matches_book"],
             "pageNote": result["page_note"],
             "candidates": result["candidates"],
+            "ocrElapsedSeconds": round(ocr_elapsed, 2),
+            "totalElapsedSeconds": round(total_elapsed, 2),
         }
     finally:
         tmp_path.unlink(missing_ok=True)

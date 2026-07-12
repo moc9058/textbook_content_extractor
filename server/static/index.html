@@ -316,8 +316,12 @@ function createSession(kind) {
   s.fileInput.style.display = "none";
   s.fileInput.addEventListener("change", () => { addFiles(s, s.fileInput.files); s.fileInput.value = ""; });
 
+  s.folderInput = el("input", { type: "file", multiple: true, webkitdirectory: true, directory: true });
+  s.folderInput.style.display = "none";
+  s.folderInput.addEventListener("change", () => { addFiles(s, s.folderInput.files); s.folderInput.value = ""; });
+
   s.dropzone = el("div", { className: "dropzone" });
-  s.dropzone.innerHTML = '<span class="dz-icon">📄</span><strong>クリックして画像を選択</strong>、またはここにドラッグ&ドロップ<br><span style="font-size:12px">複数可 — ファイル名順に処理し、まとめて1つのJSONにできます</span>';
+  s.dropzone.innerHTML = '<span class="dz-icon">📄</span><strong>クリックして画像を選択</strong>、またはここにドラッグ&ドロップ<br><span style="font-size:12px">複数可・フォルダ選択も可 — ファイル名順に処理し、まとめて1つのJSONにできます</span>';
   s.dropzone.addEventListener("click", () => s.fileInput.click());
   s.dropzone.addEventListener("dragover", (e) => { e.preventDefault(); s.dropzone.classList.add("drag"); });
   s.dropzone.addEventListener("dragleave", () => s.dropzone.classList.remove("drag"));
@@ -326,6 +330,9 @@ function createSession(kind) {
     s.dropzone.classList.remove("drag");
     addFiles(s, e.dataTransfer.files);
   });
+
+  s.folderBtn = el("button", { className: "btn ghost small", textContent: "📁 フォルダを選択" });
+  s.folderBtn.addEventListener("click", (e) => { e.stopPropagation(); s.folderInput.click(); });
 
   s.thumbs = el("div", { className: "thumbs" });
   s.extractBtn = el("button", { className: "btn", textContent: "抽出 (OCR + LLM)" });
@@ -339,8 +346,8 @@ function createSession(kind) {
   s.pageErrors = el("ul", { className: "page-errors" });
 
   const actions = el("div", { className: "upload-actions" });
-  actions.append(s.extractBtn, s.clearBtn, s.extractStatus);
-  up.append(s.fileInput, s.dropzone, s.thumbs, actions, s.progress, s.pageErrors);
+  actions.append(s.extractBtn, s.folderBtn, s.clearBtn, s.extractStatus);
+  up.append(s.fileInput, s.folderInput, s.dropzone, s.thumbs, actions, s.progress, s.pageErrors);
   root.append(up);
 
   // --- 結果 ---
@@ -389,8 +396,9 @@ function addFiles(s, fileList) {
     if (s.files.some(x => x.file.name === f.name && x.file.size === f.size)) continue;
     s.files.push({ file: f, url: URL.createObjectURL(f), state: "" });
   }
-  // ファイル名の自然順（page_2 < page_10）
-  s.files.sort((a, b) => a.file.name.localeCompare(b.file.name, undefined, { numeric: true, sensitivity: "base" }));
+  // ファイル名（フォルダ選択時は相対パス）の自然順（page_2 < page_10）
+  s.files.sort((a, b) => (a.file.webkitRelativePath || a.file.name)
+    .localeCompare(b.file.webkitRelativePath || b.file.name, undefined, { numeric: true, sensitivity: "base" }));
   renderThumbs(s);
 }
 
@@ -398,7 +406,9 @@ function renderThumbs(s) {
   s.thumbs.innerHTML = "";
   s.files.forEach((f, i) => {
     const t = el("div", { className: "thumb" + (f.state ? " " + f.state : "") });
-    t.title = f.file.name;
+    t.title = typeof f.elapsedSeconds === "number"
+      ? `${f.file.name}（${f.elapsedSeconds.toFixed(1)}秒）`
+      : f.file.name;
     const img = el("img"); img.src = f.url;
     const x = el("button", { className: "t-x", textContent: "×", title: "この画像を外す" });
     x.addEventListener("click", (e) => { e.stopPropagation(); URL.revokeObjectURL(f.url); s.files.splice(i, 1); renderThumbs(s); });
@@ -457,11 +467,14 @@ async function extract(s) {
   s.progress.style.display = "block";
   s.progressBar.style.width = "0%";
   const errors = [];
+  const pageTimings = [];
+  const batchStartedAt = performance.now();
   try {
     for (let i = 0; i < s.files.length; i++) {
       const entry = s.files[i];
       s.extractStatus.innerHTML = `<span class="spinner"></span>解析中 (${i + 1}/${s.files.length}): ${escapeHtml(entry.file.name)}`;
       s.extractStatus.className = "status";
+      const pageStartedAt = performance.now();
       try {
         const fd = new FormData();
         fd.append("image", entry.file);
@@ -481,6 +494,11 @@ async function extract(s) {
         s.ocrTexts.push(`=== ${src} ===\n${data.ocrText}`);
         s.candidates.push(...data.candidates.map(c => normalizeCandidate(s.kind, c, src)));
         entry.state = "done";
+        const elapsed = typeof data.totalElapsedSeconds === "number"
+          ? data.totalElapsedSeconds
+          : (performance.now() - pageStartedAt) / 1000;
+        pageTimings.push(elapsed);
+        entry.elapsedSeconds = elapsed;
       } catch (e) {
         entry.state = "error";
         errors.push(`${entry.file.name}: ${e.message}`);
@@ -492,6 +510,10 @@ async function extract(s) {
       // 候補0件でも結果エリアは出す（挿入バーから手入力で追加できるように）
       if (s.candidates.length > 0 || s.processedImages.length > 0) s.resultArea.classList.remove("hidden");
     }
+    const batchElapsed = (performance.now() - batchStartedAt) / 1000;
+    const timingSuffix = pageTimings.length > 0
+      ? `（所要時間: 合計${batchElapsed.toFixed(1)}秒・1ページ平均${(pageTimings.reduce((a, b) => a + b, 0) / pageTimings.length).toFixed(1)}秒）`
+      : "";
     // 全ページ抽出後に、同じ文法パターンの重複を①②…でまとめる（文法のみ・LLMなし）
     const rawCount = s.candidates.length;
     let mergedCount = 0;
@@ -502,14 +524,14 @@ async function extract(s) {
       renderCards(s);
     }
     if (errors.length === 0) {
-      s.extractStatus.textContent = mergedCount > 0
+      s.extractStatus.textContent = (mergedCount > 0
         ? `✓ ${s.processedImages.length}ページから${rawCount}件を抽出し、重複文法を統合して${s.candidates.length}件にしました`
-        : `✓ ${s.processedImages.length}ページから${s.candidates.length}件の候補を抽出しました`;
+        : `✓ ${s.processedImages.length}ページから${s.candidates.length}件の候補を抽出しました`) + timingSuffix;
       s.extractStatus.className = "status ok";
     } else {
-      s.extractStatus.textContent = mergedCount > 0
+      s.extractStatus.textContent = (mergedCount > 0
         ? `${s.processedImages.length}ページ成功・${errors.length}ページ失敗（${rawCount}件抽出→重複統合で${s.candidates.length}件）`
-        : `${s.processedImages.length}ページ成功・${errors.length}ページ失敗（${s.candidates.length}件抽出）`;
+        : `${s.processedImages.length}ページ成功・${errors.length}ページ失敗（${s.candidates.length}件抽出）`) + timingSuffix;
       s.extractStatus.className = "status error";
       errors.forEach(msg => s.pageErrors.append(el("li", { textContent: msg })));
     }
