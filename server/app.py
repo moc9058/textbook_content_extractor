@@ -27,7 +27,7 @@ from fastapi.staticfiles import StaticFiles
 from openai import OpenAI
 
 from .config import load_settings
-from .llm import BOOKS, DEFAULT_BOOK_BY_KIND, structure_page
+from .llm import BOOKS, DEFAULT_BOOK_BY_KIND, structure_page, structure_pages
 from .ocr import OcrEngine
 
 settings = load_settings()
@@ -101,7 +101,8 @@ async def extract(
         ocr_elapsed = time.perf_counter() - started_at
         ocr_text = "\n".join(it["text"] for it in items)
         result = structure_page(
-            openai_client, settings.openai_model, book_id, items, description_language
+            openai_client, settings.openai_model, book_id, items, description_language,
+            source_image=image.filename or "upload",
         )
         total_elapsed = time.perf_counter() - started_at
         return {
@@ -118,6 +119,40 @@ async def extract(
         }
     finally:
         tmp_path.unlink(missing_ok=True)
+
+
+@app.post("/api/structure-batch")
+async def structure_batch(body: dict[str, Any]) -> dict[str, Any]:
+    """章・パート単位（複数ページ）を1回のLLM呼び出しで構造化する。
+
+    フロントは各ページを /api/ocr-detail でOCRしてから、その検出結果 items を
+    まとめてここに渡す。ページ境界をLLMに明示するため、表などがページをまたいでも
+    1候補に統合される。body = {kind, book, description_language, pages:[{sourceImage, items}]}
+    """
+    kind = body.get("kind", "grammar")
+    book_id = body.get("book") or DEFAULT_BOOK_BY_KIND.get(kind, "")
+    if book_id not in BOOKS:
+        raise HTTPException(status_code=400, detail=f"未登録の本です: {body.get('book') or kind}")
+    description_language = body.get("description_language", "ja")
+    pages = body.get("pages")
+    if not isinstance(pages, list) or not pages:
+        raise HTTPException(status_code=400, detail="pages (非空配列) が必要です")
+    if not all(isinstance(p, dict) and isinstance(p.get("items"), list) for p in pages):
+        raise HTTPException(status_code=400, detail="各ページは {sourceImage, items[]} である必要があります")
+    started_at = time.perf_counter()
+    result = await asyncio.to_thread(
+        structure_pages, openai_client, settings.openai_model, book_id, pages, description_language
+    )
+    elapsed = time.perf_counter() - started_at
+    return {
+        "book": book_id,
+        "kind": BOOKS[book_id]["kind"],
+        "pageMatchesBook": result["page_matches_book"],
+        "pageNote": result["page_note"],
+        "unmatchedImages": result.get("unmatched_images", []),
+        "candidates": result["candidates"],
+        "structureElapsedSeconds": round(elapsed, 2),
+    }
 
 
 @app.post("/api/ocr-detail")

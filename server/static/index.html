@@ -472,71 +472,116 @@ async function extract(s) {
   s.progress.style.display = "block";
   s.progressBar.style.width = "0%";
   const errors = [];
-  const pageTimings = [];
+  const pages = [];            // { sourceImage, items, entry }
   const batchStartedAt = performance.now();
   try {
+    // フェーズ1: ページごとにOCR（進捗バーはこのフェーズで進む。OCRが遅い処理）
     for (let i = 0; i < s.files.length; i++) {
       const entry = s.files[i];
-      s.extractStatus.innerHTML = `<span class="spinner"></span>解析中 (${i + 1}/${s.files.length}): ${escapeHtml(entry.file.name)}`;
+      s.extractStatus.innerHTML = `<span class="spinner"></span>OCR中 (${i + 1}/${s.files.length}): ${escapeHtml(entry.file.name)}`;
       s.extractStatus.className = "status";
       const pageStartedAt = performance.now();
       try {
         const fd = new FormData();
         fd.append("image", entry.file);
         fd.append("lang", s.ocrLangSel.value);
-        fd.append("description_language", s.descLangSel.value);
-        fd.append("kind", s.kind);
-        fd.append("book", s.bookSel.value);
-        const resp = await fetch("/api/extract", { method: "POST", body: fd });
+        const resp = await fetch("/api/ocr-detail", { method: "POST", body: fd });
         if (!resp.ok) throw new Error((await resp.json().catch(() => ({}))).detail || `HTTP ${resp.status}`);
         const data = await resp.json();
-        // 選択した本と違う本のスクショはこのページごとスキップ（LLM判定）
-        if (data.pageMatchesBook === false) {
-          throw new Error(`選択した本のページではないようです${data.pageNote ? `（${data.pageNote}）` : ""}`);
-        }
         const src = data.sourceImage || entry.file.name;
-        s.processedImages.push(src);
-        s.ocrTexts.push(`=== ${src} ===\n${data.ocrText}`);
-        s.candidates.push(...data.candidates.map(c => normalizeCandidate(s.kind, c, src)));
-        entry.state = "done";
-        const elapsed = typeof data.totalElapsedSeconds === "number"
-          ? data.totalElapsedSeconds
-          : (performance.now() - pageStartedAt) / 1000;
-        pageTimings.push(elapsed);
-        entry.elapsedSeconds = elapsed;
+        pages.push({ sourceImage: src, items: data.items || [], entry });
+        s.ocrTexts.push(`=== ${src} ===\n${(data.items || []).map(it => it.text).join("\n")}`);
+        entry.elapsedSeconds = (performance.now() - pageStartedAt) / 1000;
       } catch (e) {
         entry.state = "error";
-        errors.push(`${entry.file.name}: ${e.message}`);
+        errors.push(`${entry.file.name}: OCR失敗 — ${e.message}`);
       }
-      s.progressBar.style.width = `${Math.round(((i + 1) / s.files.length) * 100)}%`;
+      // OCRフェーズは全体の90%まで。残り10%はバッチ構造化ぶん。
+      s.progressBar.style.width = `${Math.round(((i + 1) / s.files.length) * 90)}%`;
       renderThumbs(s);
       s.rawOcrPre.textContent = s.ocrTexts.join("\n\n");
-      renderCards(s);
-      // 候補0件でも結果エリアは出す（挿入バーから手入力で追加できるように）
-      if (s.candidates.length > 0 || s.processedImages.length > 0) s.resultArea.classList.remove("hidden");
     }
-    const batchElapsed = (performance.now() - batchStartedAt) / 1000;
-    const timingSuffix = pageTimings.length > 0
-      ? `（所要時間: 合計${batchElapsed.toFixed(1)}秒・1ページ平均${(pageTimings.reduce((a, b) => a + b, 0) / pageTimings.length).toFixed(1)}秒）`
-      : "";
-    // 全ページ抽出後に、同じ文法パターンの重複を①②…でまとめる（文法のみ・LLMなし）
+
+    if (pages.length === 0) {
+      s.progressBar.style.width = "100%";
+      s.extractStatus.textContent = "OCRできるページがありませんでした";
+      s.extractStatus.className = "status error";
+      errors.forEach(msg => s.pageErrors.append(el("li", { textContent: msg })));
+      return;
+    }
+
+    // フェーズ2: 章・パート全体を1回のLLM呼び出しで構造化（ページまたぎの表などを1候補に統合）
+    s.extractStatus.innerHTML = `<span class="spinner"></span>構造化中… ${pages.length}ページを1つの章としてまとめて解析`;
+    s.resultArea.classList.remove("hidden");
+    let data;
+    try {
+      const resp = await fetch("/api/structure-batch", {
+        method: "POST",
+        headers: { "Content-Type": "application/json" },
+        body: JSON.stringify({
+          kind: s.kind,
+          book: s.bookSel.value,
+          description_language: s.descLangSel.value,
+          pages: pages.map(p => ({ sourceImage: p.sourceImage, items: p.items })),
+        }),
+      });
+      if (!resp.ok) throw new Error((await resp.json().catch(() => ({}))).detail || `HTTP ${resp.status}`);
+      data = await resp.json();
+    } catch (e) {
+      s.progressBar.style.width = "100%";
+      s.extractStatus.textContent = `構造化に失敗しました: ${e.message}`;
+      s.extractStatus.className = "status error";
+      errors.forEach(msg => s.pageErrors.append(el("li", { textContent: msg })));
+      return;
+    }
+    s.progressBar.style.width = "100%";
+
+    // バッチ全体が違う本だったら全ページをスキップして報告
+    if (data.pageMatchesBook === false) {
+      pages.forEach(p => { p.entry.state = "error"; });
+      renderThumbs(s);
+      s.extractStatus.textContent = `選択した本のページではないようです${data.pageNote ? `（${data.pageNote}）` : ""}`;
+      s.extractStatus.className = "status error";
+      return;
+    }
+
+    // 一部だけ違う本のページ（unmatchedImages）はスキップ扱い、それ以外を成功に
+    const unmatched = new Set(data.unmatchedImages || []);
+    for (const p of pages) {
+      if (unmatched.has(p.sourceImage)) {
+        p.entry.state = "error";
+        errors.push(`${p.sourceImage}: 選択した本のページではないようです（スキップ）`);
+      } else {
+        p.entry.state = "done";
+        s.processedImages.push(p.sourceImage);
+      }
+    }
+    renderThumbs(s);
+
+    s.candidates = (data.candidates || []).map(c => normalizeCandidate(s.kind, c));
+    // 念のためのクライアント側統合（バッチLLMが取りこぼした同一文法の重複を①②…でまとめる）
     const rawCount = s.candidates.length;
     let mergedCount = 0;
     if (s.kind === "grammar") {
       const merged = mergeDuplicateGrammar(s.candidates);
       s.candidates = merged.candidates;
       mergedCount = merged.mergedCount;
-      renderCards(s);
     }
+    renderCards(s);
+    s.resultArea.classList.remove("hidden");
+
+    const batchElapsed = (performance.now() - batchStartedAt) / 1000;
+    const structPart = typeof data.structureElapsedSeconds === "number"
+      ? `・構造化${data.structureElapsedSeconds.toFixed(1)}秒` : "";
+    const timingSuffix = `（所要時間 合計${batchElapsed.toFixed(1)}秒${structPart}）`;
+    const pageWord = `${s.processedImages.length}ページを1つの章として解析`;
     if (errors.length === 0) {
       s.extractStatus.textContent = (mergedCount > 0
-        ? `✓ ${s.processedImages.length}ページから${rawCount}件を抽出し、重複文法を統合して${s.candidates.length}件にしました`
-        : `✓ ${s.processedImages.length}ページから${s.candidates.length}件の候補を抽出しました`) + timingSuffix;
+        ? `✓ ${pageWord}し${rawCount}件を抽出、重複文法を統合して${s.candidates.length}件にしました`
+        : `✓ ${pageWord}し${s.candidates.length}件の候補を抽出しました`) + timingSuffix;
       s.extractStatus.className = "status ok";
     } else {
-      s.extractStatus.textContent = (mergedCount > 0
-        ? `${s.processedImages.length}ページ成功・${errors.length}ページ失敗（${rawCount}件抽出→重複統合で${s.candidates.length}件）`
-        : `${s.processedImages.length}ページ成功・${errors.length}ページ失敗（${s.candidates.length}件抽出）`) + timingSuffix;
+      s.extractStatus.textContent = `${pageWord}（${s.candidates.length}件）・${errors.length}ページをスキップ` + timingSuffix;
       s.extractStatus.className = "status error";
       errors.forEach(msg => s.pageErrors.append(el("li", { textContent: msg })));
     }
@@ -547,7 +592,14 @@ async function extract(s) {
   }
 }
 
-function normalizeCandidate(kind, c, src) {
+// 候補の由来ページ: バッチ構造化は sourceImages 配列（ページまたぎ時は複数）で返す。
+function candidateSource(c) {
+  if (Array.isArray(c.sourceImages)) return [...new Set(c.sourceImages.filter(Boolean))].join(", ");
+  return c.sourceImage || "";
+}
+
+function normalizeCandidate(kind, c) {
+  const src = candidateSource(c);
   if (kind === "word") {
     return {
       include: true,

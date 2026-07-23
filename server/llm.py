@@ -51,23 +51,33 @@ GRAMMAR_CANDIDATES_SCHEMA: dict[str, Any] = {
     "schema": {
         "type": "object",
         "additionalProperties": False,
-        "required": ["page_matches_book", "page_note", "candidates"],
+        "required": ["page_matches_book", "page_note", "unmatched_images", "candidates"],
         "properties": {
             "page_matches_book": {
                 "type": "boolean",
-                "description": "True if this page plausibly comes from the expected book described in the instructions; false if it clearly belongs to a different book or unrelated material.",
+                "description": "True if the uploaded pages, taken together, plausibly come from the expected book described in the instructions; false only when the WHOLE batch clearly belongs to a different book or unrelated material.",
             },
             "page_note": {
                 "type": ["string", "null"],
-                "description": "When page_matches_book is false: a short Japanese note saying what the page appears to be instead. Null when true.",
+                "description": "When page_matches_book is false: a short Japanese note saying what the pages appear to be instead. Null when true.",
+            },
+            "unmatched_images": {
+                "type": "array",
+                "items": {"type": "string"},
+                "description": "Page filenames (exactly as in the '=== PAGE: <name> ===' markers) that appear to belong to a DIFFERENT book or unrelated material and were skipped. Use this when SOME pages are foreign but the batch overall still matches. Empty array when every page matches.",
             },
             "candidates": {
                 "type": "array",
                 "items": {
                     "type": "object",
                     "additionalProperties": False,
-                    "required": ["statement", "transliteration", "group", "level", "description", "examples"],
+                    "required": ["statement", "transliteration", "group", "level", "description", "examples", "sourceImages"],
                     "properties": {
+                        "sourceImages": {
+                            "type": "array",
+                            "items": {"type": "string"},
+                            "description": "Every page filename (exactly as in the '=== PAGE: <name> ===' markers) this candidate's content was drawn from, in reading order. A table or explanation that spans multiple pages lists all of them; a single-page candidate lists exactly one.",
+                        },
                         "statement": {
                             "type": "string",
                             "description": "The grammar pattern in normalized +/… notation: Chinese function words verbatim (从, 别, 把 …), grammatical roles as LOWERCASE English abbreviations (s, o, v, n, adj, adv …), semantic slots as concise Japanese nouns (人物, 場所, 時間 …). E.g. 别+v+了, 从+場所/時間+v",
@@ -106,11 +116,19 @@ GRAMMAR_CANDIDATES_SCHEMA: dict[str, Any] = {
 
 LANG_NAMES = {"ja": "Japanese", "en": "English", "ko": "Korean", "zh": "Chinese"}
 
-GRAMMAR_SYSTEM_PROMPT = """You receive the raw OCR detections from one page of "HSK公認テキスト４級", a textbook that teaches Chinese grammar, with explanations written in {description_language}. Each input line has the form
+GRAMMAR_SYSTEM_PROMPT = """You receive the raw OCR detections from the pages of ONE chapter/part of "HSK公認テキスト４級", a textbook that teaches Chinese grammar, with explanations written in {description_language}. The pages are given in reading order, each introduced by a marker line
+
+=== PAGE: <filename> ===
+
+after which that page's detections follow, each of the form
 
 [y=<top>-<bottom> x=<left>-<right> h=<box height>] <detected text>
 
-Coordinates are pixels; y grows downward. Text fragments whose y-ranges overlap belong to the same printed line even when OCR split them into separate boxes (the page prints wide gaps inside patterns and between words) — merge them left-to-right by x. Box height h correlates with font size.
+Treat the whole batch as one continuous unit of the book. Coordinates are pixels and y grows downward, but y RESETS on every page — so "same printed line" reasoning by overlapping y applies only WITHIN one page (between two consecutive PAGE markers). Text fragments on the same page whose y-ranges overlap belong to the same printed line even when OCR split them into separate boxes (the page prints wide gaps inside patterns and between words) — merge them left-to-right by x. Box height h correlates with font size.
+
+## Elements that span pages
+
+An element — most often a table, but also a long explanation or a 4-line set — may START on one page and CONTINUE on the next page (or the page after). When the top of a page is clearly the continuation of something from a previous page (e.g. more rows of a table whose header/Point title appeared earlier, with no new heading of its own), do NOT emit a separate fragment: fold it into the SAME candidate as the part on the earlier page. Whenever a candidate draws from more than one page, list every page filename in `sourceImages` (reading order). A candidate confined to one page lists just that one.
 
 ## Page layout
 
@@ -148,13 +166,21 @@ Below a 4-line set there may be extra material — decide by content whether it 
 
 ## Tables
 
-The page may contain vocabulary tables (usually 4 columns: level/blank, word, meaning, example+notes; pinyin printed above words/sentences; cells wrap across boxes). These are word lists, not grammar points — do NOT emit candidates from them.
+A Point may present a vocabulary/summary table (usually 4 columns: level/blank, word, meaning, example+notes; pinyin printed above words/sentences; cells wrap across boxes). Turn ONE table into ONE candidate — never one candidate per word row:
+- `group`: the Point title the table belongs to (or a table-specific heading if one is printed).
+- `statement`: a short subject for the table; reuse the Point title if there is no better subject.
+- `description`: a BULLET LIST with one bullet per word row (the word + meaning columns), each bullet combining the Chinese word, its pinyin if shown, and the {description_language} meaning, e.g. "- 从 cóng：〜から". Include the level column value if present.
+- `examples`: the example-sentence column (column 4) becomes grammar examples ({{sentence, translation}}); gather the whole table's example sentences into this one candidate.
+- A table often CONTINUES onto the next page (or the one after). Fold ALL its rows and examples across pages into this single candidate and list every page it covers in `sourceImages`.
 
-Drop page numbers, headers, exercise prompts and unrelated fragments. If the page contains no grammar points, return an empty array.
+Drop page numbers, headers, exercise prompts and unrelated fragments. If the batch contains no grammar points, return an empty array.
 
 ## Book check
 
-Before extracting anything, judge whether this page really comes from THIS grammar textbook. Signals that it does: Part/Point structure, grammar-pattern lines with ＋ notation, 4-line sets (pattern / pinyin / Chinese sentence / {description_language} translation), section headings like 注意点. If the page instead looks like a different book — e.g. a vocabulary training book (numbered word rows in a 3-column table with □/★ marks and "UNIT N" margins) — or unrelated material, set `page_matches_book` to false, put a short Japanese note in `page_note` describing what the page appears to be, and return an empty `candidates` array. When the page matches, set `page_matches_book` to true and `page_note` to null."""
+Before extracting anything, judge whether these pages really come from THIS grammar textbook. Signals that they do: Part/Point structure, grammar-pattern lines with ＋ notation, 4-line sets (pattern / pinyin / Chinese sentence / {description_language} translation), section headings like 注意点. Handle the batch as follows:
+- If the WHOLE batch looks like a different book — e.g. a vocabulary training book (numbered word rows in a 3-column table with □/★ marks and "UNIT N" margins) — or unrelated material, set `page_matches_book` to false, put a short Japanese note in `page_note` describing what the pages appear to be, leave `unmatched_images` empty, and return an empty `candidates` array.
+- If the batch is mainly this book but a FEW individual pages are foreign, keep `page_matches_book` true and `page_note` null, list those foreign page filenames in `unmatched_images`, and extract candidates only from the matching pages.
+- When every page matches, set `page_matches_book` true, `page_note` null, and `unmatched_images` empty."""
 
 # 固定略語マッピングをプロンプトに焼き込む（{description_language} は structure_page で解決）
 GRAMMAR_SYSTEM_PROMPT = GRAMMAR_SYSTEM_PROMPT.replace(
@@ -170,23 +196,33 @@ WORD_CANDIDATES_SCHEMA: dict[str, Any] = {
     "schema": {
         "type": "object",
         "additionalProperties": False,
-        "required": ["page_matches_book", "page_note", "candidates"],
+        "required": ["page_matches_book", "page_note", "unmatched_images", "candidates"],
         "properties": {
             "page_matches_book": {
                 "type": "boolean",
-                "description": "True if this page plausibly comes from the expected book described in the instructions; false if it clearly belongs to a different book or unrelated material.",
+                "description": "True if the uploaded pages, taken together, plausibly come from the expected book described in the instructions; false only when the WHOLE batch clearly belongs to a different book or unrelated material.",
             },
             "page_note": {
                 "type": ["string", "null"],
-                "description": "When page_matches_book is false: a short Japanese note saying what the page appears to be instead. Null when true.",
+                "description": "When page_matches_book is false: a short Japanese note saying what the pages appear to be instead. Null when true.",
+            },
+            "unmatched_images": {
+                "type": "array",
+                "items": {"type": "string"},
+                "description": "Page filenames (exactly as in the '=== PAGE: <name> ===' markers) that appear to belong to a DIFFERENT book or unrelated material and were skipped. Use this when SOME pages are foreign but the batch overall still matches. Empty array when every page matches.",
             },
             "candidates": {
                 "type": "array",
                 "items": {
                     "type": "object",
                     "additionalProperties": False,
-                    "required": ["term", "transliteration", "level", "definitions", "examples"],
+                    "required": ["term", "transliteration", "level", "definitions", "examples", "sourceImages"],
                     "properties": {
+                        "sourceImages": {
+                            "type": "array",
+                            "items": {"type": "string"},
+                            "description": "Every page filename (exactly as in the '=== PAGE: <name> ===' markers) this word row was drawn from, in reading order. A word row whose example cells continue onto the next page lists every page it spans; a single-page row lists exactly one.",
+                        },
                         "term": {
                             "type": "string",
                             "description": "The Chinese headword exactly as printed (fix obvious OCR character errors)",
@@ -243,11 +279,19 @@ WORD_CANDIDATES_SCHEMA: dict[str, Any] = {
     },
 }
 
-WORD_SYSTEM_PROMPT = """You receive the raw OCR detections from one page of "新HSK1〜4級単語トレーニングブック", a Chinese vocabulary training book whose meanings and translations are written in Japanese. Each input line has the form
+WORD_SYSTEM_PROMPT = """You receive the raw OCR detections from the pages of ONE unit/section of "新HSK1〜4級単語トレーニングブック", a Chinese vocabulary training book whose meanings and translations are written in Japanese. The pages are given in reading order, each introduced by a marker line
+
+=== PAGE: <filename> ===
+
+after which that page's detections follow, each of the form
 
 [y=<top>-<bottom> x=<left>-<right> h=<box height>] <detected text>
 
-Coordinates are pixels; y grows downward. Text fragments whose y-ranges overlap belong to the same printed line even when OCR split them into separate boxes — merge them left-to-right by x. Box height h correlates with font size.
+Treat the whole batch as one continuous unit. Coordinates are pixels and y grows downward, but y RESETS on every page — so "same printed line" reasoning by overlapping y applies only WITHIN one page (between two consecutive PAGE markers). Text fragments on the same page whose y-ranges overlap belong to the same printed line even when OCR split them into separate boxes — merge them left-to-right by x. Box height h correlates with font size.
+
+## Rows that span pages
+
+The vocabulary table continues across pages. A word row near the bottom of a page may have some of its example cells (or its wrapped meaning) continue at the TOP of the next page, where they appear with no headword of their own. When that happens, attach those trailing examples/meaning to the SAME word candidate rather than dropping them or inventing a new candidate, and list both page filenames in `sourceImages`. A row confined to one page lists just that page.
 
 ## Page layout
 
@@ -273,13 +317,16 @@ One candidate per word row:
 ## Extra material
 
 - Sometimes an annotation appears under a headword cell (e.g. 「学び合う」という意味がある) → append it to that word's definition `text` (newlines are allowed).
-- Between word rows there may be comparison notes contrasting previously introduced words, as lines of the form （中国語単語）：日本語説明, possibly one per line and possibly wrapped across boxes. If the compared word is a headword on THIS page, append the explanation to that word's definition text; otherwise ignore the line. Never emit a comparison note as its own candidate.
+- Between word rows there may be comparison notes contrasting previously introduced words, as lines of the form （中国語単語）：日本語説明, possibly one per line and possibly wrapped across boxes. If the compared word is a headword anywhere in this batch, append the explanation to that word's definition text; otherwise ignore the line. Never emit a comparison note as its own candidate.
 
-Drop page numbers, headers, unit/theme/session numbers and titles, □/★ artifacts, and unrelated fragments. If the page contains no vocabulary table, return an empty array.
+Drop page numbers, headers, unit/theme/session numbers and titles, □/★ artifacts, and unrelated fragments. If the batch contains no vocabulary table, return an empty array.
 
 ## Book check
 
-Before extracting anything, judge whether this page really comes from THIS vocabulary training book. Signals that it does: numbered word rows in a 3-column table (number+□/★ column, headword+pinyin+Japanese meaning column, example-sentence column), "UNIT N" margins, theme/session numbering. If the page instead looks like a different book — e.g. a grammar textbook (Part/Point structure, grammar-pattern lines with ＋ notation, 4-line pattern/pinyin/sentence/translation sets) — or unrelated material, set `page_matches_book` to false, put a short Japanese note in `page_note` describing what the page appears to be, and return an empty `candidates` array. When the page matches, set `page_matches_book` to true and `page_note` to null."""
+Before extracting anything, judge whether these pages really come from THIS vocabulary training book. Signals that they do: numbered word rows in a 3-column table (number+□/★ column, headword+pinyin+Japanese meaning column, example-sentence column), "UNIT N" margins, theme/session numbering. Handle the batch as follows:
+- If the WHOLE batch looks like a different book — e.g. a grammar textbook (Part/Point structure, grammar-pattern lines with ＋ notation, 4-line pattern/pinyin/sentence/translation sets) — or unrelated material, set `page_matches_book` to false, put a short Japanese note in `page_note` describing what the pages appear to be, leave `unmatched_images` empty, and return an empty `candidates` array.
+- If the batch is mainly this book but a FEW individual pages are foreign, keep `page_matches_book` true and `page_note` null, list those foreign page filenames in `unmatched_images`, and extract candidates only from the matching pages.
+- When every page matches, set `page_matches_book` true, `page_note` null, and `unmatched_images` empty."""
 
 
 def format_ocr_items(items: list[dict[str, Any]]) -> str:
@@ -291,19 +338,32 @@ def format_ocr_items(items: list[dict[str, Any]]) -> str:
     return "\n".join(lines)
 
 
+def format_pages(pages: list[dict[str, Any]]) -> str:
+    """複数ページの検出結果を `=== PAGE: <名前> ===` マーカー区切りの1テキストに整形する。
+
+    ページ境界を明示することで、LLM が「表がページをまたぐ」ケースを1候補に統合し、
+    各候補の由来ページを sourceImages で自己申告できるようにする。
+    """
+    blocks = []
+    for i, page in enumerate(pages):
+        name = page.get("sourceImage") or f"page{i + 1}"
+        blocks.append(f"=== PAGE: {name} ===\n{format_ocr_items(page.get('items', []))}")
+    return "\n\n".join(blocks)
+
+
 def _structure(
     client: OpenAI,
     model: str,
     system_prompt: str,
     schema: dict[str, Any],
-    ocr_items: list[dict[str, Any]],
+    user_content: str,
 ) -> dict[str, Any]:
-    """{page_matches_book, page_note, candidates} を返す。"""
+    """{page_matches_book, page_note, unmatched_images, candidates} を返す。"""
     response = client.chat.completions.create(
         model=model,
         messages=[
             {"role": "system", "content": system_prompt},
-            {"role": "user", "content": format_ocr_items(ocr_items)},
+            {"role": "user", "content": user_content},
         ],
         response_format={"type": "json_schema", "json_schema": schema},
     )
@@ -312,6 +372,7 @@ def _structure(
     return {
         "page_matches_book": result.get("page_matches_book", True),
         "page_note": result.get("page_note"),
+        "unmatched_images": result.get("unmatched_images", []),
         "candidates": result.get("candidates", []),
     }
 
@@ -336,19 +397,24 @@ BOOKS: dict[str, dict[str, Any]] = {
 DEFAULT_BOOK_BY_KIND = {"grammar": "hsk4-grammar", "word": "hsk1-4-word-training"}
 
 
-def structure_page(
+def structure_pages(
     client: OpenAI,
     model: str,
     book_id: str,
-    ocr_items: list[dict[str, Any]],
+    pages: list[dict[str, Any]],
     description_language: str = "ja",
 ) -> dict[str, Any]:
+    """章・パート単位（複数ページ）を1回のLLM呼び出しで構造化する。
+
+    pages: [{"sourceImage": str, "items": [検出項目]}] を読む順に並べたもの。
+    ページ境界をマーカーで明示するため、表などがページをまたいでも1候補に統合される。
+    """
     book = BOOKS[book_id]
     prompt = book["prompt"]
     if "{description_language}" in prompt:
         lang_name = LANG_NAMES.get(description_language, description_language)
         prompt = prompt.format(description_language=lang_name)
-    result = _structure(client, model, prompt, book["schema"], ocr_items)
+    result = _structure(client, model, prompt, book["schema"], format_pages(pages))
     if book["kind"] == "grammar":
         # 略語の小文字化・固定マッピングをLLM出力後にも保証する
         for cand in result["candidates"]:
@@ -359,3 +425,16 @@ def structure_page(
                 normalize_statement(cand["transliteration"]) if cand.get("transliteration") else ""
             )
     return result
+
+
+def structure_page(
+    client: OpenAI,
+    model: str,
+    book_id: str,
+    ocr_items: list[dict[str, Any]],
+    description_language: str = "ja",
+    source_image: str = "",
+) -> dict[str, Any]:
+    """1ページ分を構造化する（structure_pages の単一ページ薄ラッパ）。"""
+    page = {"sourceImage": source_image, "items": ocr_items}
+    return structure_pages(client, model, book_id, [page], description_language)
