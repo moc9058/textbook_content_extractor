@@ -457,6 +457,36 @@ function resetSession(s, opts) {
 }
 
 // ============================================================
+// ファイル名からの章グルーピング
+// ============================================================
+// ファイル名中の最初の「数字-数字」または「数字-数字-数字」を章キーとして抽出する。
+// 3つ目の数字（ページ内通し番号など）がある場合は先頭2つ（章-パート）まで、
+// 2つの数字だけの場合は先頭1つ（章）だけをキーにする。決まったルールはないため
+// 「だいたい最初の数字、または2番目の数字まで」という運用ルールに合わせている。
+// パターンが見つからないファイルは単一の既定グループにまとめる（従来どおり全部1章扱い）。
+const CHAPTER_KEY_RE = /(\d+)-(\d+)(?:-(\d+))?/;
+
+function chapterGroupKey(filename) {
+  const name = (filename || "").replace(/\.[^./\\]+$/, "");
+  const m = name.match(CHAPTER_KEY_RE);
+  if (!m) return null;
+  return m[3] ? `${m[1]}-${m[2]}` : m[1];
+}
+
+// pages（sourceImage順）をファイル名の章キーでグループ化する。
+// 既に自然順ソート済みの配列を前提に、初出順でグループの並びを決める。
+function groupPagesByChapter(pages) {
+  const groups = new Map();
+  const order = [];
+  for (const p of pages) {
+    const key = chapterGroupKey(p.sourceImage) || "__default__";
+    if (!groups.has(key)) { groups.set(key, []); order.push(key); }
+    groups.get(key).push(p);
+  }
+  return order.map(key => ({ key, pages: groups.get(key) }));
+}
+
+// ============================================================
 // 抽出
 // ============================================================
 async function extract(s) {
@@ -510,55 +540,75 @@ async function extract(s) {
       return;
     }
 
-    // フェーズ2: 章・パート全体を1回のLLM呼び出しで構造化（ページまたぎの表などを1候補に統合）
-    s.extractStatus.innerHTML = `<span class="spinner"></span>構造化中… ${pages.length}ページを1つの章としてまとめて解析`;
+    // フェーズ2: ファイル名の章番号でグルーピングし、章グループごとに1回のLLM呼び出しで構造化
+    // （ページまたぎの表などは同じ章グループ内で1候補に統合。章が違えば別呼び出し）
+    const groups = groupPagesByChapter(pages);
     s.resultArea.classList.remove("hidden");
-    let data;
-    try {
-      const resp = await fetch("/api/structure-batch", {
-        method: "POST",
-        headers: { "Content-Type": "application/json" },
-        body: JSON.stringify({
-          kind: s.kind,
-          book: s.bookSel.value,
-          description_language: s.descLangSel.value,
-          pages: pages.map(p => ({ sourceImage: p.sourceImage, items: p.items })),
-        }),
-      });
-      if (!resp.ok) throw new Error((await resp.json().catch(() => ({}))).detail || `HTTP ${resp.status}`);
-      data = await resp.json();
-    } catch (e) {
-      s.progressBar.style.width = "100%";
-      s.extractStatus.textContent = `構造化に失敗しました: ${e.message}`;
+
+    let structureElapsedTotal = 0;
+    const allCandidatesRaw = [];
+    for (let gi = 0; gi < groups.length; gi++) {
+      const group = groups[gi];
+      s.extractStatus.innerHTML = `<span class="spinner"></span>構造化中 (${gi + 1}/${groups.length}章): ${escapeHtml(group.key === "__default__" ? "章番号なし" : group.key)}（${group.pages.length}ページ）`;
+      let data;
+      try {
+        const resp = await fetch("/api/structure-batch", {
+          method: "POST",
+          headers: { "Content-Type": "application/json" },
+          body: JSON.stringify({
+            kind: s.kind,
+            book: s.bookSel.value,
+            description_language: s.descLangSel.value,
+            pages: group.pages.map(p => ({ sourceImage: p.sourceImage, items: p.items })),
+          }),
+        });
+        if (!resp.ok) throw new Error((await resp.json().catch(() => ({}))).detail || `HTTP ${resp.status}`);
+        data = await resp.json();
+      } catch (e) {
+        group.pages.forEach(p => { p.entry.state = "error"; });
+        errors.push(`章「${group.key}」: 構造化に失敗しました — ${e.message}`);
+        renderThumbs(s);
+        s.progressBar.style.width = `${90 + Math.round(((gi + 1) / groups.length) * 10)}%`;
+        continue;
+      }
+
+      if (typeof data.structureElapsedSeconds === "number") structureElapsedTotal += data.structureElapsedSeconds;
+
+      // グループ全体が違う本だったら、そのグループのページだけスキップして報告
+      if (data.pageMatchesBook === false) {
+        group.pages.forEach(p => { p.entry.state = "error"; });
+        errors.push(`章「${group.key}」: 選択した本のページではないようです${data.pageNote ? `（${data.pageNote}）` : ""}`);
+        renderThumbs(s);
+        s.progressBar.style.width = `${90 + Math.round(((gi + 1) / groups.length) * 10)}%`;
+        continue;
+      }
+
+      // 一部だけ違う本のページ（unmatchedImages）はスキップ扱い、それ以外を成功に
+      const unmatched = new Set(data.unmatchedImages || []);
+      for (const p of group.pages) {
+        if (unmatched.has(p.sourceImage)) {
+          p.entry.state = "error";
+          errors.push(`${p.sourceImage}: 選択した本のページではないようです（スキップ）`);
+        } else {
+          p.entry.state = "done";
+          s.processedImages.push(p.sourceImage);
+        }
+      }
+      renderThumbs(s);
+
+      allCandidatesRaw.push(...(data.candidates || []));
+      s.progressBar.style.width = `${90 + Math.round(((gi + 1) / groups.length) * 10)}%`;
+    }
+    s.progressBar.style.width = "100%";
+
+    if (s.processedImages.length === 0) {
+      s.extractStatus.textContent = "構造化できたページがありませんでした";
       s.extractStatus.className = "status error";
       errors.forEach(msg => s.pageErrors.append(el("li", { textContent: msg })));
       return;
     }
-    s.progressBar.style.width = "100%";
 
-    // バッチ全体が違う本だったら全ページをスキップして報告
-    if (data.pageMatchesBook === false) {
-      pages.forEach(p => { p.entry.state = "error"; });
-      renderThumbs(s);
-      s.extractStatus.textContent = `選択した本のページではないようです${data.pageNote ? `（${data.pageNote}）` : ""}`;
-      s.extractStatus.className = "status error";
-      return;
-    }
-
-    // 一部だけ違う本のページ（unmatchedImages）はスキップ扱い、それ以外を成功に
-    const unmatched = new Set(data.unmatchedImages || []);
-    for (const p of pages) {
-      if (unmatched.has(p.sourceImage)) {
-        p.entry.state = "error";
-        errors.push(`${p.sourceImage}: 選択した本のページではないようです（スキップ）`);
-      } else {
-        p.entry.state = "done";
-        s.processedImages.push(p.sourceImage);
-      }
-    }
-    renderThumbs(s);
-
-    s.candidates = (data.candidates || []).map(c => normalizeCandidate(s.kind, c));
+    s.candidates = allCandidatesRaw.map(c => normalizeCandidate(s.kind, c));
     // 念のためのクライアント側統合（バッチLLMが取りこぼした同一文法の重複を①②…でまとめる）
     const rawCount = s.candidates.length;
     let mergedCount = 0;
@@ -571,10 +621,10 @@ async function extract(s) {
     s.resultArea.classList.remove("hidden");
 
     const batchElapsed = (performance.now() - batchStartedAt) / 1000;
-    const structPart = typeof data.structureElapsedSeconds === "number"
-      ? `・構造化${data.structureElapsedSeconds.toFixed(1)}秒` : "";
+    const structPart = structureElapsedTotal > 0
+      ? `・構造化${structureElapsedTotal.toFixed(1)}秒` : "";
     const timingSuffix = `（所要時間 合計${batchElapsed.toFixed(1)}秒${structPart}）`;
-    const pageWord = `${s.processedImages.length}ページを1つの章として解析`;
+    const pageWord = `${s.processedImages.length}ページを${groups.length}章として解析`;
     if (errors.length === 0) {
       s.extractStatus.textContent = (mergedCount > 0
         ? `✓ ${pageWord}し${rawCount}件を抽出、重複文法を統合して${s.candidates.length}件にしました`
